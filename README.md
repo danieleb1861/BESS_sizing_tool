@@ -87,7 +87,7 @@ python -m bess_nsps.main_opt `
 
 **What happens**
 - Outer sweep: **bess-pesteps × bess-esteps** BESS (P,E) configurations per profile.
-- Inner DP per config: optimal battery scheduling & generator commitment within constraints.
+- Inner DP per config: optimal battery scheduling and generator commitment within constraints.
 - KPIs computed: fuel (kg), mean C-rate, mean DoD, EFC/year, energy throughput, backup time, volume proxy.
 - **Pareto** mask added to the CSV (`pareto = True` means non-dominated).
 
@@ -112,9 +112,9 @@ Thus, the core workflow is:
      \-- plots.py
     
     Optional utilities (not in main path):
-     • plots_mirror.py
-     • plot_results.py
-     • window_presets.py
+     - plots_mirror.py
+     - plot_results.py
+     - window_presets.py
 
 
 ---
@@ -180,8 +180,8 @@ Omit slicing arguments.
 | `--soc-max`            | float (0–1)          | 0.80                  | Maximum state-of-charge limit                                         |
 | `--eta-c`              | float (0–1)          | 0.97                  | Charge efficiency                                                     |
 | `--eta-d`              | float (0–1)          | 0.94                  | Discharge efficiency                                                  |
-| `--alpha-min`          | float                | -1.0                  | Minimum load-share α                                                  |
-| `--alpha-max`          | float                | 1.0                   | Maximum load-share α                                                  |
+| `--alpha-min`          | float                | -1.0                  | Minimum load-share $\alpha$                                                  |
+| `--alpha-max`          | float                | 1.0                   | Maximum load-share $\alpha$                                                  |
 | `--ndg`                | int                  | 6                     | Number of installed DG units                                          |
 | `--save`               | path                 | `outputs/results.csv` | Output CSV file                                                       |
 | `--plots`              | flag                 | off                   | Save plots to `outputs/plots/`                                        |
