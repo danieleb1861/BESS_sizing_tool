@@ -1,0 +1,306 @@
+"""
+    main_opt.py — CLI entrypoint to run DP sweeps and produce KPIs/plots
+
+
+    This script:
+    1) parses command‑line args (plant, BESS ranges, time windowing, outputs),
+    2) loads one or more load profiles (CSV or MAT via data.load_profile),
+    3) optionally windows the time series (by datetime, minutes, indices, or
+    auto‑detected manoeuvre windows),
+    4) sweeps BESS power/energy grids; for each pair runs DP and computes KPIs,
+    5) optionally generates plots and saves a results CSV.
+
+
+    It orchestrates DP (dp.run_dp), the data utilities (data.py), plotting helpers
+    (plots.py), and KPI computation (kpi.py).
+"""
+
+import argparse
+import os
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+
+# Profile I/O utilities (CSV/MAT loading, optional MAT window metadata)
+from .data import choose_profiles, load_profile  # keep as-is; we’ll call it safely
+# optional: only used if you pass --use-mat-window
+try:
+    from .data import get_mat_window
+except Exception:
+    get_mat_window = None
+
+# optional: CSV-aware dt bound conversion
+try:
+    from .data import csv_dt_bounds_to_minutes
+except Exception:
+    csv_dt_bounds_to_minutes = None
+
+# Plant/BESS specs and DP interface
+from .models import DGSpec, BESSpec
+from .dp import DPConfig, run_dp
+from .kpi import compute_kpis
+from . import plots
+
+# Windowing helpers
+from .window import slice_by_indices, slice_by_time, find_manoeuvre_window
+
+
+def build_dg(pmax_kw: float):
+    # Create a DGSpec with a simple SFOC curve sampled on % load.
+
+    sfoc = np.array([300, 250, 230, 215, 211, 208, 210, 213], dtype=float)  # g/kWh
+    pgrid = np.array([0, 20, 40, 60, 75, 85, 95, 100], dtype=float) / 100.0 * pmax_kw
+    return DGSpec(
+        pmax_kw=pmax_kw,
+        pmin_frac=0.20,
+        pmax_frac=0.95,
+        sfoc_g_per_kwh=sfoc,
+        p_grid_kw=pgrid,
+    )
+
+
+def nondominated(F: np.ndarray) -> np.ndarray:
+    # Return a boolean mask of Pareto‑nondominated rows of F.
+    # Expects F with columns as objectives to *minimize*. A point i is dominated if some j has F[j] ≤ F[i] in all objectives and < in at least one.
+
+    N = F.shape[0]
+    mask = np.ones(N, dtype=bool)
+    for i in range(N):
+        if not mask[i]:
+            continue
+        dominates = np.all(F <= F[i], axis=1) & np.any(F < F[i], axis=1)
+        dominates[i] = False
+        if np.any(dominates):
+            mask[i] = False
+    return mask
+
+
+def _tod_to_min(s: str) -> float:
+    # Convert 'HH:MM[:SS]' (or 'YYYY-MM-DD HH:MM[:SS]') to minutes from 00:00. Generic fallback when we don't have CSV base date.
+
+    s = s.strip().replace("T", " ")
+    parts = s.split()
+    if len(parts) == 2 and "-" in parts[0]:
+        s = parts[1]
+    hh, mm, *rest = s.split(":")
+    ss = float(rest[0]) if rest else 0.0
+    return int(hh) * 60 + int(mm) + ss / 60.0
+
+
+def _safe_load_profile(path: str):
+    # Call data.load_profile() with (optionally) step_min/max_samples if supported. Returns (pow_load_kw, t_min).
+
+    try:
+        return load_profile(path, step_min=1.0, max_samples=100_000)
+    except TypeError:
+        # Older or simpler signature: load_profile(path) -> (pow_load, t_min)
+        return load_profile(path)
+
+
+def main():
+    # Command Line Interface (CLI) entrypoint: parse args, load/window data, sweep BESS, run DP, save results.
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--profiles", nargs="+", required=True)
+
+    # Plant sizing
+    ap.add_argument("--dg-pmax", type=float, default=2200.0)
+    ap.add_argument("--ndg", type=int, default=6)
+
+    # Design sweep (BESS power and energy grids)
+    ap.add_argument("--bess-pmin", type=float, default=660.0)
+    ap.add_argument("--bess-pmax", type=float, default=1540.0)
+    ap.add_argument("--bess-pesteps", type=int, default=16)
+    ap.add_argument("--bess-emin", type=float, default=660.0)
+    ap.add_argument("--bess-emax", type=float, default=1540.0)
+    ap.add_argument("--bess-esteps", type=int, default=16)
+
+    # BESS model
+    ap.add_argument("--soc-min", type=float, default=0.20)
+    ap.add_argument("--soc-max", type=float, default=0.80)
+    ap.add_argument("--eta-c", type=float, default=0.97)
+    ap.add_argument("--eta-d", type=float, default=0.94)
+    ap.add_argument("--alpha-min", type=float, default=-1.0)
+    ap.add_argument("--alpha-max", type=float, default=1.0)
+
+    # Outputs
+    ap.add_argument("--save", type=str, default="outputs/results.csv")
+    ap.add_argument("--plots", action="store_true")
+
+    # Windowing (minute-native; also supports datetime-like convenience)
+    ap.add_argument("--dt-start", type=str, default=None,
+                    help='Datetime start (e.g. "2024-05-01 15:04:20" or "15:04:20")')
+    ap.add_argument("--dt-end", type=str, default=None,
+                    help='Datetime end (e.g. "2024-05-01 15:05:10" or "15:05:10")')
+
+    ap.add_argument("--t-start", type=float, default=None, help="Start time [minutes from first sample]")
+    ap.add_argument("--t-end",   type=float, default=None, help="End time [minutes from first sample]")
+    ap.add_argument("--i-start", type=int,   default=None, help="Start index (0-based)")
+    ap.add_argument("--i-end",   type=int,   default=None, help="End index (exclusive)")
+    ap.add_argument("--use-mat-window", action="store_true",
+                    help="Read i0/i1 or t0/t1 (minutes) from the .mat file, if present")
+    ap.add_argument("--window-min", type=float, default=0.0,
+                    help="Auto-select window length in minutes; 0 = full profile")
+    ap.add_argument("--window-method", type=str, default="ramp", choices=["ramp", "std"],
+                    help="Auto window scoring: ramp=sum|dp/dt|, std=rolling std")
+
+    args = ap.parse_args()
+
+   
+    # ---- Design grids ----
+
+    p_grid = np.linspace(args.bess_pmin, args.bess_pmax, args.bess_pesteps)
+    e_grid = np.linspace(args.bess_emin, args.bess_emax, args.bess_esteps)
+    soc_grid = np.linspace(args.soc_min, args.soc_max, 31)
+
+    # Plant specs and DP config
+    dg = build_dg(args.dg_pmax)
+    cfg = DPConfig(
+        ndg_installed=args.ndg,
+        soc_grid=soc_grid,
+        alpha_min=args.alpha_min,
+        alpha_max=args.alpha_max,
+    )
+
+    # Prepare output dir
+    os.makedirs(os.path.dirname(args.save), exist_ok=True)
+    rows = []
+
+    # Resolve profile paths
+    profile_paths = choose_profiles(args.profiles)
+
+    for prof in profile_paths:
+        # 1) Load profile
+        pow_load_kw, t_min = _safe_load_profile(prof)
+
+        # 2) Apply windowing in priority order
+        if args.dt_start and args.dt_end:
+            # If CSV, convert dt strings to minutes-from-first-sample using the file's first timestamp
+            if os.path.splitext(prof)[1].lower() == ".csv" and csv_dt_bounds_to_minutes is not None:
+                try:
+                    t0m, t1m = csv_dt_bounds_to_minutes(prof, args.dt_start, args.dt_end)
+                except Exception as e:
+                    print(f"[warn] csv dt bounds failed: {e}; falling back to time-of-day minutes.")
+                    t0m = _tod_to_min(args.dt_start)
+                    t1m = _tod_to_min(args.dt_end)
+            else:
+                # Generic fallback: interpret as minutes-from-midnight
+                t0m = _tod_to_min(args.dt_start)
+                t1m = _tod_to_min(args.dt_end)
+
+            pow_load_kw, t_min = slice_by_time(pow_load_kw, t_min, t0m, t1m)
+
+        elif args.i_start is not None and args.i_end is not None:
+            pow_load_kw, t_min = slice_by_indices(pow_load_kw, t_min, args.i_start, args.i_end)
+
+        elif args.t_start is not None and args.t_end is not None:
+            pow_load_kw, t_min = slice_by_time(pow_load_kw, t_min, args.t_start, args.t_end)
+
+        elif args.use_mat_window and get_mat_window is not None:
+            # Read i0/i1 or t0/t1 from the .mat stored alongside the profile
+            meta = get_mat_window(os.path.join("data", os.path.basename(prof)))
+            if meta:
+                if "i0" in meta and "i1" in meta:
+                    pow_load_kw, t_min = slice_by_indices(pow_load_kw, t_min, meta["i0"], meta["i1"])
+                elif "t0" in meta and "t1" in meta:
+                    pow_load_kw, t_min = slice_by_time(pow_load_kw, t_min, meta["t0"], meta["t1"])
+
+        elif args.window_min and args.window_min > 0:
+            # Auto‑select most "interesting" window (maneuver) by ramp/STD score
+            pow_load_kw, t_min = find_manoeuvre_window(
+                pow_load_kw, t_min, window_min=args.window_min, method=args.window_method
+            )
+
+        # 3) Safety: non-empty & monotonic time
+        if len(t_min) == 0:
+            print(f"[warn] windowing produced zero samples on {os.path.basename(prof)}; using full series.")
+            pow_load_kw, t_min = _safe_load_profile(prof)
+
+        t_min = np.asarray(t_min, float).ravel()
+        if np.any(np.diff(t_min) <= 0):
+            t_min = np.arange(len(pow_load_kw), dtype=float)
+
+        print(f"[{os.path.basename(prof)}] using {len(t_min)} samples "
+              f"from t=[{t_min[0]:.2f},{t_min[-1]:.2f}] min")
+
+        # 4) Outer sweep + DP
+        for p_bess in tqdm(p_grid, desc=f"BESS power sweep ({prof})"):
+            for e_bess in e_grid:
+                # Build BESS spec for this design point
+                bes = BESSpec(
+                    pmax_kw=float(p_bess),
+                    e_kwh=float(e_bess),
+                    soc_min=args.soc_min,
+                    soc_max=args.soc_max,
+                    eta_c=args.eta_c,
+                    eta_d=args.eta_d,
+                )
+                # Run DP
+                res = run_dp(pow_load_kw, t_min, dg, bes, cfg)
+
+                # KPIs (battery stress, energy throughput, backup time, etc.)
+                k = compute_kpis(
+                    p_bess_kw=res.p_bess_traj_kw,
+                    dt_min=np.diff(t_min, prepend=t_min[0]),
+                    soc=res.soc_traj,
+                    bes=bes,
+                    volume_method="geometry",
+                    batt_pmax_kw=bes.pmax_kw,  # pass BESS pmax as MATLAB does
+                )
+
+                k.fuel_kg = res.cost_kg
+
+                # Optional plots for the first profile and few points
+                if args.plots and prof == profile_paths[0] and len(rows) <= 2:
+                    outdir = os.path.join(os.path.dirname(args.save), "plots")
+                    plots.plot_fuelcons(
+                        t_min,
+                        res.p_dg_traj_kw,
+                        np.array(res.n_active_traj, dtype=float),
+                        lambda x: np.interp(x, dg.p_grid_kw, dg.sfoc_g_per_kwh),
+                        outdir,
+                    )
+                    plots.plot_soc(t_min, res.soc_traj, bes.soc_min, bes.soc_max, outdir)
+                    plots.plot_load_sharing(
+                        t_min, pow_load_kw, res.p_bess_traj_kw, res.p_dg_traj_kw, res.n_active_traj, outdir
+                    )
+
+                # Collect row for results table
+                rows.append({
+                    "profile": prof,
+                    "bess_pmax_kw": p_bess,
+                    "bess_e_kwh": e_bess,
+                    "fuel_kg": k.fuel_kg,
+                    "c_rate_mean_per_h": k.c_rate_mean_per_h,
+                    "dod_mean": k.dod_mean,
+                    "efc_per_year": k.efc_per_year,
+                    "energy_throughput_kwh": k.energy_throughput_kwh,
+                    "t_backup_min": k.t_backup_min,
+                    "volume_proxy_m3": k.volume_proxy_m3,
+                })
+
+    # 5) Post processing: Pareto flag + optional heatmap + save CSV
+    df = pd.DataFrame(rows)
+    cols = [
+        "fuel_kg",
+        "c_rate_mean_per_h",
+        "dod_mean",
+        "efc_per_year",
+        "energy_throughput_kwh",
+        "volume_proxy_m3",
+    ]
+    df["pareto"] = nondominated(df[cols].to_numpy())
+
+    if args.plots:
+        plots.plot_heatmap(
+            df, "bess_pmax_kw", "bess_e_kwh", "fuel_kg",
+            os.path.join(os.path.dirname(args.save), "plots", "fuel_heatmap.png"),
+        )
+
+    os.makedirs(os.path.dirname(args.save), exist_ok=True)
+    df.to_csv(args.save, index=False)
+    print(f"Saved results to: {args.save}")
+
+
+if __name__ == "__main__":
+    main()
