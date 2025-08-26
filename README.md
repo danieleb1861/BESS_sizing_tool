@@ -26,6 +26,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 # macOS/Linux:
 source .venv/bin/activate
 
+# Run requirements if you don't have a .venv folder
 pip install -r requirements.txt
 ```
 
@@ -120,80 +121,73 @@ Thus, the core workflow is:
 ---
 
 # Manoeuvre/window selection
-You can restrict the load profile before optimisation:
+You can restrict the load profile before optimisation using several methods:
 
-a) Select manoeuvre set:
-```
---manov 1 → use dt_array_1st, pow_load_1st
-```
+- **MAT-file metadata window**  
+  If the profile is a `.mat` file and contains `{i0,i1}` or `{t0,t1}` fields, you can activate it with:
+    ```bash
+    --use-mat-window
+    ```
 
-```
---manov 2 → use dt_array_2nd, pow_load_2nd
-```
-b) Choose the slicing method:
-- Default MATLAB-style per-file datetime window:
-
-Example:  
-```bash
---use-default-window
-```
-Uses hard-coded start/stop times per profile (see window.py).
-
-- Custom datetime range (match the datetime objects in dt_array_*):
-```bash
---dt-start "2024-05-01 15:13:20" --dt-end "2024-05-01 15:15:30"
-```
+- Custom datetime range (absolute or time-of-day):
+    ```
+    --dt-start "2024-05-01 15:13:20" --dt-end "2024-05-01 15:15:30"
+    ```
 
 - Custom minute range (relative to first sample):
-```bash
---t-start 793 --t-end 815
-```
+
+    ```bash
+    --t-start 793 --t-end 815
+    ```
 
 - Custom index range:
-```bash
---i-start 100 --i-end 200
-```
+    ```bash
+    --i-start 100 --i-end 200
+    ```
 
-- Automatic scoring:
-Finds the highest variation/ramp segment of given length.
-```bash
---window-min 5 --window-method ramp
-```
+- Automatic manoeuvre detection
+
+    Finds the most dynamic segment of a given length (minutes):
+    ```bash
+    --window-min 5 --window-method ramp
+    ```
+    Available methods: ramp (sum |dp/dt|), std (rolling std).
 
 - Full profile:
-Omit slicing arguments.
+
+    Omit all slicing arguments to use the entire load profile.
 
 ---
 
 # CLI arguments
-| Argument               | Type / Values        | Default               | Description                                                           |
-| ---------------------- | -------------------- | --------------------- | --------------------------------------------------------------------- |
-| `--profiles`           | list of `.mat` files | **required**          | Profiles to process (inside `data/`)                                  |
-| `--dg-pmax`            | float (kW)           | 2200.0                | Max power per diesel generator                                        |
-| `--bess-pmin`          | float (kW)           | 660.0                 | Minimum BESS rated power                                              |
-| `--bess-pmax`          | float (kW)           | 1540.0                | Maximum BESS rated power                                              |
-| `--bess-pesteps`       | int                  | 16                    | Steps in BESS power sweep                                             |
-| `--bess-emin`          | float (kWh)          | 660.0                 | Minimum BESS energy capacity                                          |
-| `--bess-emax`          | float (kWh)          | 1540.0                | Maximum BESS energy capacity                                          |
-| `--bess-esteps`        | int                  | 16                    | Steps in BESS energy sweep                                            |
-| `--soc-min`            | float (0–1)          | 0.20                  | Minimum state-of-charge limit                                         |
-| `--soc-max`            | float (0–1)          | 0.80                  | Maximum state-of-charge limit                                         |
-| `--eta-c`              | float (0–1)          | 0.97                  | Charge efficiency                                                     |
-| `--eta-d`              | float (0–1)          | 0.94                  | Discharge efficiency                                                  |
-| `--alpha-min`          | float                | -1.0                  | Minimum load-share $\alpha$                                                  |
-| `--alpha-max`          | float                | 1.0                   | Maximum load-share $\alpha$                                                  |
-| `--ndg`                | int                  | 6                     | Number of installed DG units                                          |
-| `--save`               | path                 | `outputs/results.csv` | Output CSV file                                                       |
-| `--plots`              | flag                 | off                   | Save plots to `outputs/plots/`                                        |
-| `--window-min`         | float (min)          | 0.0                   | Auto window length in minutes (0 = full)                              |
-| `--window-method`      | `ramp` / `std`       | `ramp`                | Method for auto window scoring                                        |
-| `--use-mat-window`     | flag                 | off                   | Use i0/i1 or t0/t1 stored in `.mat`                                   |
-| `--t-start`            | float (min)          | None                  | Custom window start time                                              |
-| `--t-end`              | float (min)          | None                  | Custom window end time                                                |
-| `--i-start`            | int                  | None                  | Custom window start index                                             |
-| `--i-end`              | int                  | None                  | Custom window end index                                               |
-| `--manov`              | 1 or 2               | None                  | Select `dt_array_1st`/`pow_load_1st` or `dt_array_2nd`/`pow_load_2nd` |
-| `--use-default-window` | flag                 | off                   | Apply built-in per-file default datetime window                       |
+| Argument           | Type / Values        | Default               | Description                                                           |
+| ------------------ | -------------------- | --------------------- | --------------------------------------------------------------------- |
+| `--profiles`       | list of files        | **required**          | Profiles to process (CSV or MAT inside `data/`)                       |
+| `--dg-pmax`        | float (kW)           | 2200.0                | Max power per diesel generator                                        |
+| `--ndg`            | int                  | 6                     | Number of installed DG units                                          |
+| `--bess-pmin`      | float (kW)           | 660.0                 | Minimum BESS rated power                                              |
+| `--bess-pmax`      | float (kW)           | 1540.0                | Maximum BESS rated power                                              |
+| `--bess-pesteps`   | int                  | 16                    | Steps in BESS power sweep                                             |
+| `--bess-emin`      | float (kWh)          | 660.0                 | Minimum BESS energy capacity                                          |
+| `--bess-emax`      | float (kWh)          | 1540.0                | Maximum BESS energy capacity                                          |
+| `--bess-esteps`    | int                  | 16                    | Steps in BESS energy sweep                                            |
+| `--soc-min`        | float (0–1)          | 0.20                  | Minimum state-of-charge limit                                         |
+| `--soc-max`        | float (0–1)          | 0.80                  | Maximum state-of-charge limit                                         |
+| `--eta-c`          | float (0–1)          | 0.97                  | Charge efficiency                                                     |
+| `--eta-d`          | float (0–1)          | 0.94                  | Discharge efficiency                                                  |
+| `--alpha-min`      | float                | -1.0                  | Minimum load-share $\alpha$                                                  |
+| `--alpha-max`      | float                | 1.0                   | Maximum load-share $\alpha$                                                  |
+| `--save`           | path                 | `outputs/results.csv` | Output CSV file                                                       |
+| `--plots`          | flag                 | off                   | Save plots to `outputs/plots/`                                        |
+| `--dt-start`       | datetime string      | None                  | Custom window start (absolute or HH:MM:SS)                            |
+| `--dt-end`         | datetime string      | None                  | Custom window end                                                     |
+| `--t-start`        | float (min)          | None                  | Custom window start time (minutes from first sample)                  |
+| `--t-end`          | float (min)          | None                  | Custom window end time                                                |
+| `--i-start`        | int                  | None                  | Custom window start index                                             |
+| `--i-end`          | int                  | None                  | Custom window end index                                               |
+| `--use-mat-window` | flag                 | off                   | Use i0/i1 or t0/t1 stored in `.mat` metadata                         |
+| `--window-min`     | float (min)          | 0.0                   | Auto window length in minutes (0 = full profile)                      |
+| `--window-method`  | `ramp` / `std`       | `ramp`                | Method for auto window scoring                                        |
 
 
 ---
@@ -204,7 +198,7 @@ Add `--plots` to also save figures in `outputs/plots/`:
 - `soc.png` — SoC vs mission time with bounds
 - `load_sharing.png` — load, DG total power, BESS power, active DGs
 - `fuel_consumption.png` — cumulative fuel, SFOC trace, DG power
-- `fuel_heatmap.png` — fuel across the 16×16 grid
+- `fuel_heatmap.png` — fuel across the P×E grid
 
 ```bash
 python -m bess_nsps.main_opt ... --plots
@@ -214,28 +208,35 @@ If your CSV is at outputs/results.csv:
 ```bash
 python src/bess_nsps/plot_results.py
 ```
-or specify paths:
-```bash
-python src/bess_nsps/plot_results.py `
-  --csv outputs/results.csv `
-  --outdir outputs/plots `
-  --topn 8
-```
+Optionally pick which variables to scatter (--vars is a comma-separated list),
+set figure size, and jitter overlapping points slightly:
 
-All variables:
 ```bash
-python src/bess_nsps/plot_results.py `
-  --csv outputs/results.csv `
-  --outdir outputs/plots `
+python src/bess_nsps/plot_results.py \
+  --csv outputs/results.csv \
+  --outdir outputs/plots \
+  --vars fuel_kg,volume_proxy_m3,c_rate_mean_per_h \
+  --figwidth 9 --figheight 6 \
   --jitter 0.02
 ```
 
-Disable Heatmap:
+Disable the heatmap:
 ```bash
 python scripts/plot_pareto_grid.py `
   --csv outputs/results.csv `
   --outdir outputs/plots `
   --no-heatmap
+```
+
+Customize heatmap axes/metric (defaults: power on X, energy on Y, fuel as Z):
+```bash
+python src/bess_nsps/plot_results.py \
+  --csv outputs/results.csv \
+  --outdir outputs/plots \
+  --heatmap-p-col bess_pmax_kw \
+  --heatmap-e-col bess_e_kwh \
+  --heatmap-fuel-col fuel_kg \
+  --heatmap-pareto-only
 ```
 
 ---
