@@ -3,10 +3,10 @@
 
 
     This script:
-    1) parses command‑line args (plant, BESS ranges, time windowing, outputs),
+    1) parses command line args (plant, BESS ranges, time windowing, outputs),
     2) loads one or more load profiles (CSV or MAT via data.load_profile),
     3) optionally windows the time series (by datetime, minutes, indices, or
-    auto‑detected manoeuvre windows),
+    auto-detected manoeuvre windows),
     4) sweeps BESS power/energy grids; for each pair runs DP and computes KPIs,
     5) optionally generates plots and saves a results CSV.
 
@@ -19,7 +19,10 @@ import argparse
 import os
 import numpy as np
 import pandas as pd
+import h5py
 from tqdm import tqdm
+from pathlib import Path
+from itertools import product
 
 # Profile I/O utilities (CSV/MAT loading, optional MAT window metadata)
 from .data import choose_profiles, load_profile  # keep as-is; we’ll call it safely
@@ -224,60 +227,62 @@ def main():
               f"from t=[{t_min[0]:.2f},{t_min[-1]:.2f}] min")
 
         # 4) Outer sweep + DP
-        for p_bess in tqdm(p_grid, desc=f"BESS power sweep ({prof})"):
-            for e_bess in e_grid:
-                # Build BESS spec for this design point
-                bes = BESSpec(
-                    pmax_kw=float(p_bess),
-                    e_kwh=float(e_bess),
-                    soc_min=args.soc_min,
-                    soc_max=args.soc_max,
-                    eta_c=args.eta_c,
-                    eta_d=args.eta_d,
+        pairs = product(p_grid, e_grid)
+        for p_bess, e_bess in tqdm(
+                list(pairs),  # materialize so tqdm knows total
+                total=len(p_grid) * len(e_grid),
+                desc=f"BESS grid ({os.path.basename(prof)})"):
+            # Build BESS spec for this design point
+            bes = BESSpec(
+                pmax_kw=float(p_bess),
+                e_kwh=float(e_bess),
+                soc_min=args.soc_min,
+                soc_max=args.soc_max,
+                eta_c=args.eta_c,
+                eta_d=args.eta_d,
+            )
+            # Run DP
+            res = run_dp(pow_load_kw, t_min, dg, bes, cfg)
+
+            # KPIs
+            k = compute_kpis(
+                p_bess_kw=res.p_bess_traj_kw,
+                dt_min=np.diff(t_min, prepend=t_min[0]),
+                soc=res.soc_traj,
+                bes=bes,
+                volume_method="geometry",
+                batt_pmax_kw=bes.pmax_kw,
+            )
+            k.fuel_kg = res.cost_kg
+
+            # Optional plots
+            if args.plots and prof == profile_paths[0] and len(rows) <= 2:
+                outdir = os.path.join(os.path.dirname(args.save), "plots")
+                plots.plot_fuelcons(
+                    t_min,
+                    res.p_dg_traj_kw,
+                    np.array(res.n_active_traj, dtype=float),
+                    lambda x: np.interp(x, dg.p_grid_kw, dg.sfoc_g_per_kwh),
+                    outdir,
                 )
-                # Run DP
-                res = run_dp(pow_load_kw, t_min, dg, bes, cfg)
-
-                # KPIs (battery stress, energy throughput, backup time, etc.)
-                k = compute_kpis(
-                    p_bess_kw=res.p_bess_traj_kw,
-                    dt_min=np.diff(t_min, prepend=t_min[0]),
-                    soc=res.soc_traj,
-                    bes=bes,
-                    volume_method="geometry",
-                    batt_pmax_kw=bes.pmax_kw,  # pass BESS pmax as MATLAB does
+                plots.plot_soc(t_min, res.soc_traj, bes.soc_min, bes.soc_max, outdir)
+                plots.plot_load_sharing(
+                    t_min, pow_load_kw, res.p_bess_traj_kw, res.p_dg_traj_kw, res.n_active_traj, outdir
                 )
 
-                k.fuel_kg = res.cost_kg
-
-                # Optional plots for the first profile and few points
-                if args.plots and prof == profile_paths[0] and len(rows) <= 2:
-                    outdir = os.path.join(os.path.dirname(args.save), "plots")
-                    plots.plot_fuelcons(
-                        t_min,
-                        res.p_dg_traj_kw,
-                        np.array(res.n_active_traj, dtype=float),
-                        lambda x: np.interp(x, dg.p_grid_kw, dg.sfoc_g_per_kwh),
-                        outdir,
-                    )
-                    plots.plot_soc(t_min, res.soc_traj, bes.soc_min, bes.soc_max, outdir)
-                    plots.plot_load_sharing(
-                        t_min, pow_load_kw, res.p_bess_traj_kw, res.p_dg_traj_kw, res.n_active_traj, outdir
-                    )
-
-                # Collect row for results table
-                rows.append({
-                    "profile": prof,
-                    "bess_pmax_kw": p_bess,
-                    "bess_e_kwh": e_bess,
-                    "fuel_kg": k.fuel_kg,
-                    "c_rate_mean_per_h": k.c_rate_mean_per_h,
-                    "dod_mean": k.dod_mean,
-                    "efc_per_year": k.efc_per_year,
-                    "energy_throughput_kwh": k.energy_throughput_kwh,
-                    "t_backup_min": k.t_backup_min,
-                    "volume_proxy_m3": k.volume_proxy_m3,
-                })
+            # Collect row for results table
+            rows.append({
+                "profile": prof,
+                "bess_pmax_kw": p_bess,
+                "bess_e_kwh": e_bess,
+                "fuel_kg": k.fuel_kg,
+                "c_rate_mean_per_h": k.c_rate_mean_per_h,
+                "dod_mean": k.dod_mean,
+                "efc_per_year": k.efc_per_year,
+                "energy_throughput_kwh": k.energy_throughput_kwh,
+                "t_backup_min": k.t_backup_min,
+                "volume_proxy_m3": k.volume_proxy_m3,
+            })
 
     # 5) Post processing: Pareto flag + optional heatmap + save CSV
     df = pd.DataFrame(rows)
@@ -290,6 +295,67 @@ def main():
         "volume_proxy_m3",
     ]
     df["pareto"] = nondominated(df[cols].to_numpy())
+
+    # --- Save traces for Pareto points ---
+    def save_trace_h5(h5path, group, t_min, pow_load_kw, res, dg, bes, cfg, meta):
+        Path(os.path.dirname(h5path)).mkdir(parents=True, exist_ok=True)
+        with h5py.File(h5path, "a") as h5:
+            g = h5.require_group(group)
+            # timeseries
+            for name, arr in {
+                "t_min": t_min,
+                "pow_load_kw": pow_load_kw,
+                "soc": res.soc_traj,
+                "n_active": np.asarray(res.n_active_traj, int),
+                "p_bess_kw": res.p_bess_traj_kw,
+                "p_dg_kw": res.p_dg_traj_kw,
+            }.items():
+                if name in g: del g[name]
+                ds = g.create_dataset(name, data=arr, compression="gzip", shuffle=True, chunks=True)
+            # scalars/meta
+            g.attrs.update({
+                "fuel_kg": float(res.cost_kg),
+                "bess_pmax_kw": float(bes.pmax_kw),
+                "bess_e_kwh": float(bes.e_kwh),
+                "soc_min": float(bes.soc_min),
+                "soc_max": float(bes.soc_max),
+                "eta_c": float(bes.eta_c),
+                "eta_d": float(bes.eta_d),
+                "dg_pmax_kw": float(dg.pmax_kw),
+                "ndg": int(cfg.ndg_installed),
+                **meta
+            })
+
+    # Build a compact ID for each configuration
+    def cfg_id(profile, pmax, e):
+        base = os.path.splitext(os.path.basename(profile))[0]
+        return f"{base}/p{int(round(pmax))}_e{int(round(e))}"
+
+    # Re-run only Pareto points and save
+    h5out = os.path.join(os.path.dirname(args.save), "traces.h5")
+    pareto_df = df[df["pareto"]].copy()
+
+    for _, row in pareto_df.iterrows():
+        prof = row["profile"]
+        p_bess = float(row["bess_pmax_kw"])
+        e_bess = float(row["bess_e_kwh"])
+
+        pow_load_kw, t_min = _safe_load_profile(prof)  # re-load (or cache earlier)
+        bes = BESSpec(
+            pmax_kw=p_bess, e_kwh=e_bess,
+            soc_min=args.soc_min, soc_max=args.soc_max,
+            eta_c=args.eta_c, eta_d=args.eta_d
+        )
+        res = run_dp(pow_load_kw, t_min, dg, bes, cfg)
+
+        save_trace_h5(
+            h5out,
+            cfg_id(prof, p_bess, e_bess),
+            t_min, pow_load_kw, res, dg, bes, cfg,
+            meta={"source": "pareto", "save_policy": "pareto_only"}
+        )
+
+    print(f"Saved Pareto traces to {h5out}")
 
     if args.plots:
         plots.plot_heatmap(

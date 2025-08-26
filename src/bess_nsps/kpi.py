@@ -10,12 +10,12 @@ sizing candidates on fuel, stress, and footprint proxies.
 KPIs provided
 -------------
     - fuel_kg: total fuel mass [kg] — populated by caller from DP.
-    - c_rate_mean_per_h: average C‑rate magnitude over the horizon [1/h].
-    - dod_mean: mean depth‑of‑discharge used across the horizon (max(SoC)−min(SoC)).
+    - c_rate_mean_per_h: average C-rate magnitude over the horizon [1/h].
+    - dod_mean: mean depth-of-discharge used across the horizon (max(SoC)-min(SoC)).
     - efc_per_year: effective full cycles per year (simple proxy model).
     - energy_throughput_kwh:total absolute battery energy processed [kWh].
     - t_backup_min: backup time at rated power within the usable SoC band [min].
-    - volume_proxy_m3: volumetric footprint proxy: energy × (m³/kWh).
+    - volume_proxy_m3: volumetric footprint proxy: energy x (m³/kWh).
 """
 
 import numpy as np
