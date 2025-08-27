@@ -88,7 +88,6 @@ python -m bess_nsps.main_opt `
   --alpha-min -1.0 --alpha-max 1.0 `
   --ndg 6 `
   --plots `
-  --save-traces `
   --save outputs/results.csv
 ```
 

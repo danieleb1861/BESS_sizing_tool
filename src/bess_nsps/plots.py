@@ -27,7 +27,7 @@ def plot_soc(t_min, soc, soc_min, soc_max, outdir):
     ax.set_xlabel('% Mission time')
     ax.set_ylabel('SoC (%)')
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, 'soc.png'), dpi=200)
+    fig.savefig(os.path.join(outdir, f"{stem}soc.png"), dpi=200)
     plt.close(fig)
 
 def plot_load_sharing(t_min, p_load, p_bess, p_dg_per, n_active, outdir):
@@ -52,7 +52,7 @@ def plot_load_sharing(t_min, p_load, p_bess, p_dg_per, n_active, outdir):
     ax2.set_xlabel('% Mission time')
     ax2.set_ylabel('Active DGs (#)')
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, 'load_sharing.png'), dpi=200)
+    fig.savefig(os.path.join(outdir, f"{stem}load_sharing.png"), dpi=200)
     plt.close(fig)
 
 def plot_fuelcons(t_min, p_dg_per, n_active, sfoc_func, outdir):
@@ -88,7 +88,7 @@ def plot_fuelcons(t_min, p_dg_per, n_active, sfoc_func, outdir):
     ax3.set_ylabel('DG total (kW)')
     ax3.set_xlabel('% Mission time')
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, 'fuel_consumption.png'), dpi=200)
+    fig.savefig(os.path.join(outdir, f"{stem}fuel_consumption.png"), dpi=200)
     plt.close(fig)
 
 def plot_heatmap(df, xcol, ycol, zcol, outpath):
