@@ -13,7 +13,8 @@ def _percent_xticks(ax, t_end):
     ax.set_xticks([0, 0.25*t_end, 0.5*t_end, 0.75*t_end, t_end])
     ax.set_xticklabels(['0%','25%','50%','75%','100%'])
 
-def plot_soc(t_min, soc, soc_min, soc_max, outdir):
+def plot_soc(t_min, soc, soc_min, soc_max, outdir, stem: str = ""):
+    """Save SoC plot. If stem is provided, filenames are prefixed with it."""
     os.makedirs(outdir, exist_ok=True)
     t_rel, t_end = _percent_axis_data(t_min)
 
@@ -30,7 +31,8 @@ def plot_soc(t_min, soc, soc_min, soc_max, outdir):
     fig.savefig(os.path.join(outdir, f"{stem}soc.png"), dpi=200)
     plt.close(fig)
 
-def plot_load_sharing(t_min, p_load, p_bess, p_dg_per, n_active, outdir):
+def plot_load_sharing(t_min, p_load, p_bess, p_dg_per, n_active, outdir, stem: str = ""):
+    """Save load sharing plot. If stem is provided, filenames are prefixed with it."""
     os.makedirs(outdir, exist_ok=True)
     t_rel, t_end = _percent_axis_data(t_min)
 
@@ -55,7 +57,8 @@ def plot_load_sharing(t_min, p_load, p_bess, p_dg_per, n_active, outdir):
     fig.savefig(os.path.join(outdir, f"{stem}load_sharing.png"), dpi=200)
     plt.close(fig)
 
-def plot_fuelcons(t_min, p_dg_per, n_active, sfoc_func, outdir):
+def plot_fuelcons(t_min, p_dg_per, n_active, sfoc_func, outdir, stem: str = ""):
+    """Save fuel consumption plots. If stem is provided, filenames are prefixed with it."""
     os.makedirs(outdir, exist_ok=True)
     t_rel, t_end = _percent_axis_data(t_min)
 
@@ -63,7 +66,7 @@ def plot_fuelcons(t_min, p_dg_per, n_active, sfoc_func, outdir):
     dt_h = np.diff(t_rel, prepend=0.0) / 60.0
 
     p_dg = np.maximum(p_dg_per, 0.0)
-    sfoc = sfoc_func(p_dg)                 # g/kWh
+    sfoc = sfoc_func(p_dg)                   # g/kWh
     m_dot = (p_dg * sfoc / 1000.0) * n_active  # kg/h
     m_inc = m_dot * dt_h
     m_cum = np.cumsum(m_inc)
@@ -89,21 +92,4 @@ def plot_fuelcons(t_min, p_dg_per, n_active, sfoc_func, outdir):
     ax3.set_xlabel('% Mission time')
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, f"{stem}fuel_consumption.png"), dpi=200)
-    plt.close(fig)
-
-def plot_heatmap(df, xcol, ycol, zcol, outpath):
-    pivot = df.pivot_table(index=ycol, columns=xcol, values=zcol, aggfunc='mean')
-    fig = plt.figure(figsize=(8,6))
-    ax = fig.gca()
-    im = ax.imshow(pivot.values, origin='lower', aspect='auto')
-    ax.set_xticks(np.arange(len(pivot.columns)))
-    ax.set_xticklabels([f"{v:g}" for v in pivot.columns], rotation=45, ha='right')
-    ax.set_yticks(np.arange(len(pivot.index)))
-    ax.set_yticklabels([f"{v:g}" for v in pivot.index])
-    ax.set_xlabel(xcol)
-    ax.set_ylabel(ycol)
-    cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label(zcol)
-    fig.tight_layout()
-    fig.savefig(outpath, dpi=200)
     plt.close(fig)

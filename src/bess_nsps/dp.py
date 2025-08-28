@@ -101,7 +101,8 @@ def run_dp(p_load_kw: np.ndarray,
             p_bess_used[0, soc0_id, n-1] = p_bess0
             p_dg_used[0, soc0_id, n-1] = pdg
 
-    # ---------- DP recursion for t = 1,...,T-1 ----------
+    # ---------- DP recursion for t = 1,...,T-1 -----------
+    # ---------- O(T*L2*N2) because for each (t,s,n) the code scan all (s',n')-----------
     for t in range(1, T):
         dt = dt_min[t]
         for s_idx, soc in enumerate(cfg.soc_grid):
@@ -111,7 +112,10 @@ def run_dp(p_load_kw: np.ndarray,
 
                 # Consider all previous SoC indices and previous DG counts
                 for sp in range(L):
-                    for npv in range(1, N+1):
+                    for npv in range(max(1, n-1), min(N, n+1)+1):
+                        """ Code improvement:
+                        - Limit DG commitment changes: iterate n' only near n (e.g., n-1..n+1) instead of 1..N. That typically respects ramping/operational realism and collapses the N2 factor;
+                        - Reject impossible SOC jumps early: with the fix above transitions that require |p_bess| > pmax are skipped. That slashes the L2 factor."""
                         prev_cost = J[t-1, sp, npv-1]
                         if not np.isfinite(prev_cost):
                             # skip unreachable states
@@ -120,8 +124,8 @@ def run_dp(p_load_kw: np.ndarray,
                         soc_prev = cfg.soc_grid[sp]
 
                         # --- choose battery power that realises the transition soc_prev -> soc ---
-                        # --- compute required battery power from SOC change (deterministic, no guessing) ---
-                        # MATLAB: pbatt = -delta_soc * E / dt, with efficiency handled by
+                        # --- compute required battery power from SOC change ---
+                        # pbatt = -delta_soc * E / dt, with efficiency handled by
                             # if charging (soc > soc_prev): delta_soc /= eta_c
                             # if discharging (soc <= soc_prev): delta_soc *= eta_d
                         # Here SOC is in [0,1], dt in minutes, E in kWh, so power is kW via /(dt/60).

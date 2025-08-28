@@ -8,7 +8,7 @@ It sweeps BESS **power/energy ratings** (outer loop) and, for each configuration
 ---
 _**Warning**_: The .pdf viewer is not the best way to interact with this README.
 Download a markdown interpreter of .md files instead (Markdown Monster or what you prefer).
-From there, you can copy&paste command lines.
+From there, you can copy and paste command lines.
 
 ---
 
@@ -80,8 +80,8 @@ python -m bess_nsps.main_opt `
   --profiles IND-OMN_1st.csv `
   --dt-start "15:04:20" `
   --dt-end "15:05:10" `
-  --bess-pmin 660 --bess-pmax 1540 --bess-pesteps 4 `
-  --bess-emin 660 --bess-emax 1540 --bess-esteps 4 `
+  --bess-pmin 660 --bess-pmax 1540 --bess-pesteps 8 `
+  --bess-emin 660 --bess-emax 1540 --bess-esteps 8 `
   --dg-pmax 2200 `
   --soc-min 0.20 --soc-max 0.80 `
   --eta-c 0.97 --eta-d 0.94 `
@@ -200,7 +200,7 @@ You can restrict the load profile before optimisation using several methods:
 
 # Plots
 
-Add `--plots` to also save figures in `outputs/plots/`:
+Add `--plots` to also save figures in `outputs/plots/`, in dedicated folders in the format `YYYYMMDD-HHMMSS` (representing the starting time of the run):
 - `soc.png` — SoC vs mission time with bounds
 - `load_sharing.png` — load, DG total power, BESS power, active DGs
 - `fuel_consumption.png` — cumulative fuel, SFOC, DG power
@@ -264,7 +264,7 @@ python scripts/plot_pareto_grid.py `
 
 ---
 
-# License & citation
+# License and citation
 
 Distributed under the **MIT License** (see `LICENSE`).  
 If you use this in research or reports, please cite the associated open-access article and this repository.

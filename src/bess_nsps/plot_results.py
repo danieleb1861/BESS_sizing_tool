@@ -57,6 +57,7 @@ def _ensure_pareto(df: pd.DataFrame) -> pd.DataFrame:
 # ---------- Labels ----------
 LABELS = {
     "fuel_kg": "Fuel [kg]",
+    "fuel_pct": "Fuel [% of worst]",
     "bess_pmax_kw": r"$P_{BESS, \max}$ [kW]",
     "bess_e_kwh": r"$E_{BESS, \max}$ [kWh]",
     "volume_proxy_m3": r"Volume [m³]",
@@ -65,6 +66,26 @@ LABELS = {
     "efc_per_year": r"EFC per year [cycles/yr]",
     "energy_throughput_kwh": r"Energy throughput [kWh]",
 }
+
+# ---------- Normalization helpers ----------
+def _add_normalized_columns(df: pd.DataFrame, dg_rated: float) -> pd.DataFrame:
+    """Add normalized fuel (%) and nondimensional power/energy (p.u.)."""
+    out = df.copy()
+
+    # Non-dimensional P and E
+    if "bess_pmax_kw" in out.columns:
+        out["bess_pmax_pu"] = out["bess_pmax_kw"].astype(float) / float(dg_rated)
+    if "bess_e_kwh" in out.columns:
+        out["bess_e_over_pdg_h"] = out["bess_e_kwh"].astype(float) / float(dg_rated)
+
+    # Normalize fuel: worst = 100%, improvements < 100%
+    if "fuel_kg" in out.columns and "profile" in out.columns:
+        out["fuel_kg"] = out["fuel_kg"].astype(float)
+        fmax = out.groupby("profile")["fuel_kg"].transform("max")
+        out["fuel_pct"] = 100.0 * out["fuel_kg"] / fmax
+
+    return out
+
 
 # Which direction is "better" for the Y metric in the (fuel, Y) plane.
 # We'll always minimize fuel; for Y we either maximize or minimize as listed below.
@@ -96,7 +117,7 @@ def plot_pe_fuel_heatmap(
     outdir: str,
     p_col="bess_pmax_kw",
     e_col="bess_e_kwh",
-    fuel_col="fuel_kg",
+    fuel_col="fuel_pct",
     pareto_only=False,
     mark_min=True,
 ):
@@ -168,22 +189,22 @@ def plot_pareto_grid(
         g = g.replace([np.inf, -np.inf], np.nan).dropna(subset=["fuel_kg"])
 
         # Global min fuel for this profile
-        i_min = g["fuel_kg"].idxmin()
-        fuel_min = g.loc[i_min, "fuel_kg"]
+        i_min = g["fuel_pct"].idxmin()
+        fuel_min = g.loc[i_min, "fuel_pct"]
 
         fig, axes = plt.subplots(2, 3, figsize=(figwidth, figheight))
         axes = axes.ravel()
 
         for ax, var in zip(axes, variables):
             # keep finite points for this plane
-            gg = g.dropna(subset=["fuel_kg", var]).copy()
+            gg = g.dropna(subset=["fuel_pct", var]).copy()
             if gg.empty:
                 ax.set_visible(False)
                 continue
 
             # per-plane nondominance: minimize fuel; for Y either maximize or minimize
             y = gg[var].to_numpy(float)
-            fuel = gg["fuel_kg"].to_numpy(float)
+            fuel = gg["fuel_pct"].to_numpy(float)
 
             # convert to an all-minimization array for _nondominated
             if var in Y_MAXIMIZE:
@@ -203,18 +224,18 @@ def plot_pareto_grid(
                 rng = np.random.default_rng(0)
                 if len(dom):
                     dom = dom.copy()
-                    dom["fuel_kg"] = dom["fuel_kg"].to_numpy(float) + rng.normal(0, jitter, len(dom))
+                    dom["fuel_pct"] = dom["fuel_pct"].to_numpy(float) + rng.normal(0, jitter, len(dom))
                 if len(par):
                     par = par.copy()
-                    par["fuel_kg"] = par["fuel_kg"].to_numpy(float) + rng.normal(0, jitter, len(par))
+                    par["fuel_pct"] = par["fuel_pct"].to_numpy(float) + rng.normal(0, jitter, len(par))
 
             # 1) dominated (blue)
             if len(dom):
-                ax.scatter(dom["fuel_kg"], dom[var], s=18, alpha=0.9, color="blue", label="Dominated")
+                ax.scatter(dom["fuel_pct"], dom[var], s=18, alpha=0.9, color="blue", label="Dominated")
 
             # 2) Pareto front for this plane (red)
             if len(par):
-                ax.scatter(par["fuel_kg"], par[var], s=36, alpha=0.95, color="red",
+                ax.scatter(par["fuel_pct"], par[var], s=36, alpha=0.95, color="red",
                            edgecolor="none", label="Pareto front")
 
             # 3) min fuel (red ×) — only if var exists for that row
@@ -222,7 +243,7 @@ def plot_pareto_grid(
                 ax.scatter([fuel_min], [g.loc[i_min, var]], s=80, marker="x",
                            color="red", linewidths=1.6, label="Min fuel")
 
-            ax.set_xlabel(LABELS.get("fuel_kg", "Fuel [kg]"))
+            ax.set_xlabel(LABELS.get("fuel_pct", "Fuel [kg]"))
             ax.set_ylabel(LABELS.get(var, var))
             ax.grid(True, linestyle=":", linewidth=0.8)
 
@@ -255,10 +276,10 @@ def main():
                     help="Small jitter on fuel x-values to reveal overlaps (e.g. 0.02).")
 
     # Heatmap options (enabled by default; disable with --no-heatmap)
-    ap.add_argument("--no-heatmap", action="store_true", help="Disable P–E–Fuel heatmaps")
+    ap.add_argument("--no-heatmap", action="store_true", help="Disable P-E-Fuel heatmaps")
     ap.add_argument("--heatmap-p-col", default="bess_pmax_kw")
     ap.add_argument("--heatmap-e-col", default="bess_e_kwh")
-    ap.add_argument("--heatmap-fuel-col", default="fuel_kg")
+    ap.add_argument("--heatmap-fuel-col", default="fuel_pct")
     ap.add_argument("--heatmap-pareto-only", action="store_true")
     args = ap.parse_args()
 
@@ -266,6 +287,11 @@ def main():
 
     df = pd.read_csv(args.csv)
     df = _ensure_pareto(df)
+
+    # --- Normalize fuel (%) and adimensionalize power/energy ---
+    dg_rated = 2200.0  # adjust if different DG rating
+    df = _add_normalized_columns(df, dg_rated)
+
 
     variables = args.vars if args.vars else DEFAULT_VARS
     if len(variables) != 6:
