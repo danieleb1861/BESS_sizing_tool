@@ -198,8 +198,8 @@ def main():
 
     p_grid = np.linspace(args.bess_pmin, args.bess_pmax, args.bess_pesteps)
     e_grid = np.linspace(args.bess_emin, args.bess_emax, args.bess_esteps)
-    len = 1.5*(args.soc_max-args.soc_min)
-    soc_grid = np.linspace(args.soc_min, args.soc_max, len)
+    num_soc = int(1 * 100*(args.soc_max - args.soc_min))
+    soc_grid = np.linspace(args.soc_min, args.soc_max, num_soc)
 
     # Plant specs and DP config
     dg = build_dg(args.dg_pmax)
@@ -274,7 +274,7 @@ def main():
 
         # 4) Outer sweep + DP
         pairs = product(p_grid, e_grid)
-        for p_bess, e_bess in tqdm(pairs, total=len(p_grid) * len(e_grid), desc=f"BESS grid ({os.path.basename(prof)})"):
+        for p_bess, e_bess in tqdm(list(pairs), total=len(p_grid) * len(e_grid), desc=f"BESS grid ({os.path.basename(prof)})"):
             bes = BESSpec(pmax_kw=p_bess, e_kwh=e_bess, soc_min=args.soc_min, soc_max=args.soc_max, eta_c=args.eta_c, eta_d=args.eta_d)
 
             stem = f"p{int(round(p_bess))}_e{int(round(e_bess))}_"

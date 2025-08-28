@@ -113,7 +113,7 @@ def run_dp(p_load_kw: np.ndarray,
                 # Consider all previous SoC indices and previous DG counts
                 for sp in range(L):
                     for npv in range(max(1, n-1), min(N, n+1)+1):
-                        """ Code improvement:
+                        """ Code improvement range(max(1, n-1), min(N, n+1)+1):
                         - Limit DG commitment changes: iterate n' only near n (e.g., n-1..n+1) instead of 1..N. That typically respects ramping/operational realism and collapses the N2 factor;
                         - Reject impossible SOC jumps early: with the fix above transitions that require |p_bess| > pmax are skipped. That slashes the L2 factor."""
                         prev_cost = J[t-1, sp, npv-1]
@@ -137,13 +137,18 @@ def run_dp(p_load_kw: np.ndarray,
                             # discharging or equal -> p_bess ≥ 0
                             p_bess = -(delta_soc * bes.eta_d) * bes.e_kwh / (dt/60.0)
 
-                        # Enforce absolute battery power limit
-                        p_bess = float(np.clip(p_bess, -bes.pmax_kw, bes.pmax_kw))
+                        # Enforce both alpha window (if used) and bes.pmax_kw
+                        p_lo = cfg.alpha_min * bes.pmax_kw
+                        p_hi = cfg.alpha_max * bes.pmax_kw
+                        if not (p_lo - 1e-9 <= p_bess <= p_hi + 1e-9):
+                            continue  # transition infeasible at this step
 
-                        # Validate that chosen p_bess lands within SoC bounds
-                        soc_chk = bess_soc_step(soc_prev, p_bess, dt, bes)
-                        if not (bes.soc_min - 1e-9 <= soc_chk <= bes.soc_max + 1e-9):
+                        # Validate that chosen p_bess lands on the candidate grid point
+                        soc_next = bess_soc_step(soc_prev, p_bess, dt, bes)
+                        if abs(soc_next - soc) > 1e-6:
                             continue
+
+                        p_bess = float(p_bess)
 
                         # --- compute DG power from power balance with n active DGs ---
                         pdg = power_balance(p_load_kw[t], p_bess, n)

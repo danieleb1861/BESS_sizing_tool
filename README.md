@@ -80,8 +80,8 @@ python -m bess_nsps.main_opt `
   --profiles IND-OMN_1st.csv `
   --dt-start "15:04:20" `
   --dt-end "15:05:10" `
-  --bess-pmin 660 --bess-pmax 1540 --bess-pesteps 8 `
-  --bess-emin 660 --bess-emax 1540 --bess-esteps 8 `
+  --bess-pmin 660 --bess-pmax 1540 --bess-pesteps 4 `
+  --bess-emin 660 --bess-emax 1540 --bess-esteps 4 `
   --dg-pmax 2200 `
   --soc-min 0.20 --soc-max 0.80 `
   --eta-c 0.97 --eta-d 0.94 `
