@@ -3,13 +3,13 @@ import numpy as np
 
 @dataclass
 class DGSpec:
-    pmax_kw: float            # [kW] Rated power (per generator)
-    pmin_frac: float = 0.20   # [-] lower bound fraction of pmax
-    pmax_frac: float = 0.95   # [-] upper bound fraction of pmax
+    pmax_kw: float                      # [kW] Rated power (per generator)
+    pmin_frac: float = 0.20             # [-] lower bound fraction of pmax
+    pmax_frac: float = 0.95             # [-] upper bound fraction of pmax
     ramp_up_kw_per_min: float = None
     ramp_dn_kw_per_min: float = None
-    sfoc_g_per_kwh: np.ndarray = None  # [-] - shape (K,) - SFOC (specific fuel oil consumption) curve samples in g/kWh. Interpolated piecewise-linearly against p_grid_kw.
-    p_grid_kw: np.ndarray = None       # [kW] - shape (K,) - Power grid where SFOC samples are defined.
+    sfoc_g_per_kwh: np.ndarray = None   # [-] - shape (K,) - SFOC (specific fuel oil consumption) curve samples in g/kWh. Interpolated piecewise-linearly against p_grid_kw.
+    p_grid_kw: np.ndarray = None        # [kW] - shape (K,) - Power grid where SFOC samples are defined.
 
     def __post_init__(self):
         # Derive default ramp limits if not provided

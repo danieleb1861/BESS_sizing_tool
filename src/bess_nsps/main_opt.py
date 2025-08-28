@@ -102,10 +102,10 @@ def save_trace_h5(h5path, group, t_min, pow_load_kw, res, dg, bes, cfg, meta):
         for name, arr in {
             "t_min": t_min,
             "pow_load_kw": pow_load_kw,
-            "soc": res.soc_traj,
-            "n_active": np.asarray(res.n_active_traj, int),
-            "p_bess_kw": res.p_bess_traj_kw,
-            "p_dg_kw": res.p_dg_traj_kw,
+            "soc": res.soc_opt,
+            "n_active": np.asarray(res.n_active_opt, int),
+            "p_bess_kw": res.p_bess_opt_kw,
+            "p_dg_kw": res.p_dg_opt_kw,
         }.items():
             if name in g:
                 del g[name]
@@ -281,9 +281,9 @@ def main():
             res = run_dp(pow_load_kw, t_min, dg, bes, cfg)
 
             k = compute_kpis(
-                p_bess_kw=res.p_bess_traj_kw,
+                p_bess_kw=res.p_bess_opt_kw,
                 dt_min=np.diff(t_min, prepend=t_min[0]),
-                soc=res.soc_traj,
+                soc=res.soc_opt,
                 bes=bes,
                 volume_method="geometry",
                 batt_pmax_kw=bes.pmax_kw,
@@ -324,15 +324,15 @@ def main():
         if args.plots and r["profile"] == profile_paths[0]:
             plots.plot_fuelcons(
                 t_min,
-                res.p_dg_traj_kw,
-                np.array(res.n_active_traj, dtype=float),
+                res.p_dg_opt_kw,
+                np.array(res.n_active_opt, dtype=float),
                 lambda x: np.interp(x, dg.p_grid_kw, dg.sfoc_g_per_kwh),
                 outdir_plots_run,
                 stem=stem,
             )
-            plots.plot_soc(t_min, res.soc_traj, bes.soc_min, bes.soc_max, outdir_plots_run, stem=stem)
+            plots.plot_soc(t_min, res.soc_opt, bes.soc_min, bes.soc_max, outdir_plots_run, stem=stem)
             plots.plot_load_sharing(
-                t_min, pow_load_kw, res.p_bess_traj_kw, res.p_dg_traj_kw, res.n_active_traj,
+                t_min, pow_load_kw, res.p_bess_opt_kw, res.p_dg_opt_kw, res.n_active_opt,
                 outdir_plots_run,
                 stem=stem,
             )

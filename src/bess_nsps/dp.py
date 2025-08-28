@@ -6,7 +6,7 @@
     T : number of time steps
     L (=|S|) : number of SOC grid points
     N : number of installed DG units (and max online units)
-    J[t,s,n-1] : optimal cost‑to‑go up to time t at SOC index s with n active DGs
+    J[t,s,n-1] : optimal cost-to-go up to time t at SOC index s with n active DGs
     prev_idx : backpointer storing (previous soc index, previous n)
     p_*_used : action records to reconstruct optimal control signals
 """
@@ -30,10 +30,10 @@ class DPConfig:
 class DPResult:
     # Outputs reconstructed from the optimal policy.
     cost_kg: float              # [kg], total MDO consumption
-    soc_traj: np.ndarray        # [-], optimal SoC trajectory
-    n_active_traj: np.ndarray   # [-], optimal number of online DGs at each step
-    p_bess_traj_kw: np.ndarray  # [kW], BESS power at each step
-    p_dg_traj_kw: np.ndarray    # [kW], DG power set point at each step
+    soc_opt: np.ndarray        # [-], optimal SoC trajectory
+    n_active_opt: np.ndarray   # [-], optimal number of online DGs at each step
+    p_bess_opt_kw: np.ndarray  # [kW], BESS power at each step
+    p_dg_opt_kw: np.ndarray    # [kW], DG power set point at each step
 
 # ------------------------------ Dynamic Programming SOLVER -------------------------------
 
@@ -59,7 +59,7 @@ def run_dp(p_load_kw: np.ndarray,
         Returns
         -------
         DPResult
-        Minimal fuel cost and associated optimal trajectories.
+        Minimum fuel cost and associated optimal trajectories.
     """
 
     # ---------- basic dimensions ----------
@@ -107,8 +107,8 @@ def run_dp(p_load_kw: np.ndarray,
         dt = dt_min[t]
         for s_idx, soc in enumerate(cfg.soc_grid):
             for n in range(1, N+1):
-                best_cost = INF
-                best = None # (sp, n_prev-1, p_bess, pdg)
+                reached_cost = INF
+                reached_state = None # (sp, n_prev-1, p_bess, pdg)
 
                 # Consider all previous SoC indices and previous DG counts
                 for sp in range(L):
@@ -132,7 +132,7 @@ def run_dp(p_load_kw: np.ndarray,
                         delta_soc = soc - soc_prev # >0 -> charging, <0 -> discharging
                         if delta_soc > 0:
                             # charging -> p_bess < 0
-                            p_bess = -(delta_soc / max(bes.eta_c, 1e-9)) * bes.e_kwh / (dt/60.0)
+                            p_bess = -(delta_soc / bes.eta_c) * bes.e_kwh / (dt/60.0)
                         else:
                             # discharging or equal -> p_bess ≥ 0
                             p_bess = -(delta_soc * bes.eta_d) * bes.e_kwh / (dt/60.0)
@@ -140,22 +140,17 @@ def run_dp(p_load_kw: np.ndarray,
                         # Enforce both alpha window (if used) and bes.pmax_kw
                         p_lo = cfg.alpha_min * bes.pmax_kw
                         p_hi = cfg.alpha_max * bes.pmax_kw
-                        if not (p_lo - 1e-9 <= p_bess <= p_hi + 1e-9):
+                        if not (p_lo <= p_bess <= p_hi):
                             continue  # transition infeasible at this step
-
-                        # Validate that chosen p_bess lands on the candidate grid point
-                        soc_next = bess_soc_step(soc_prev, p_bess, dt, bes)
-                        if abs(soc_next - soc) > 1e-6:
-                            continue
 
                         p_bess = float(p_bess)
 
-                        # --- compute DG power from power balance with n active DGs ---
+                        # --- Compute DG power from power balance with n active DGs ---
                         pdg = power_balance(p_load_kw[t], p_bess, n)
                         if not (pdg == 0 or (dg.pmin_frac*dg.pmax_kw <= pdg <= dg.pmax_frac*dg.pmax_kw)):
                             continue
 
-                        # --- ramp‑rate feasibility against previous DG setpoint ---
+                        # --- Ramp‑rate feasibility against previous DG setpoint ---
                         pdg_prev = p_dg_used[t-1, sp, npv-1]
                         if np.isfinite(pdg_prev):
                             dp = pdg - pdg_prev
@@ -164,36 +159,36 @@ def run_dp(p_load_kw: np.ndarray,
                             if dp < dg.ramp_dn_kw_per_min * dt:
                                 continue
 
-                        # --- stage fuel cost for n identical DGs ---
+                        # --- Stage fuel cost for n identical DGs ---
                         sfoc = sfoc_interp_g_per_kwh(
                             np.full((1,), max(pdg, 0.0)),
                             dg.p_grid_kw,
                             dg.sfoc_g_per_kwh
-                        )[0]
-                        trans_cost = n * pdg * sfoc * (dt/60.0) / 1000.0
-                        tot = prev_cost + trans_cost
+                        )[0]            # [g/kWh]
+                        trans_cost = n * pdg * sfoc * (dt/60.0) / 1000.0 # [g/kWh] -> [kg]
+                        cost = prev_cost + trans_cost
 
-                        # keep the best predecessor
-                        if tot < best_cost:
-                            best_cost = tot
-                            best = (sp, npv-1, p_bess, pdg)
+                        # Keep the best predecessor
+                        if cost < reached_cost:
+                            reached_cost = cost
+                            reached_state = (sp, npv-1, p_bess, pdg)
 
-                # write DP table if a feasible predecessor was found
-                if best is not None:
-                    J[t, s_idx, n-1] = best_cost
-                    prev_idx[t, s_idx, n-1] = (best[0], best[1])
-                    p_bess_used[t, s_idx, n-1] = best[2]
-                    p_dg_used[t, s_idx, n-1]   = best[3]
+                # Write DP table if a feasible predecessor was found
+                if reached_state is not None:
+                    J[t, s_idx, n-1] = reached_cost
+                    prev_idx[t, s_idx, n-1] = (reached_state[0], reached_state[1])
+                    p_bess_used[t, s_idx, n-1] = reached_state[2]
+                    p_dg_used[t, s_idx, n-1]   = reached_state[3]
 
-    # ---------- choose terminal n at final time and reconstruct policy ----------
+    # ---------- Choose terminal n at final time and reconstruct policy ----------
     sT = soc0_id                            # target terminal SOC index
     end_slice = J[-1, sT, :]                # costs at t=T-1 with SOC=sT
     n_end = int(np.argmin(end_slice)) + 1   # best terminal DG count
-    cost = float(end_slice[n_end-1])        # minimal total fuel [kg]
+    cost = float(end_slice[n_end-1])        # minimum total fuel [kg]
 
     # Allocate trajectories for reconstruction
-    soc_traj = np.zeros(T, dtype=float)
-    n_traj = np.zeros(T, dtype=int)
+    soc_opt = np.zeros(T, dtype=float)
+    n_opt = np.zeros(T, dtype=int)
     p_bess_tr = np.zeros(T, dtype=float)
     p_dg_tr   = np.zeros(T, dtype=float)
 
@@ -201,8 +196,8 @@ def run_dp(p_load_kw: np.ndarray,
     s = sT
     n = n_end - 1   # store as 0‑based index while backtracking
     for t in range(T-1, -1, -1):
-        soc_traj[t] = cfg.soc_grid[s]
-        n_traj[t] = n + 1
+        soc_opt[t] = cfg.soc_grid[s]
+        n_opt[t] = n + 1
         p_bess_tr[t] = p_bess_used[t, s, n]
         p_dg_tr[t]   = p_dg_used[t, s, n]
         if t > 0:
@@ -212,8 +207,8 @@ def run_dp(p_load_kw: np.ndarray,
     # Package results
     return DPResult(
         cost_kg=cost,
-        soc_traj=soc_traj,
-        n_active_traj=n_traj,
-        p_bess_traj_kw=p_bess_tr,
-        p_dg_traj_kw=p_dg_tr
+        soc_opt=soc_opt,
+        n_active_opt=n_opt,
+        p_bess_opt_kw=p_bess_tr,
+        p_dg_opt_kw=p_dg_tr
     )
