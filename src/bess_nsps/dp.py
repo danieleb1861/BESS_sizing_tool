@@ -7,7 +7,7 @@
     L (=|S|) : number of SOC grid points
     N : number of installed DG units (and max online units)
     J[t,s,n-1] : optimal cost-to-go up to time t at SOC index s with n active DGs
-    prev_idx : backpointer storing (previous soc index, previous n)
+    prev_index : backpointer storing (previous soc index, previous n)
     p_*_used : action records to reconstruct optimal control signals
 """
 
@@ -30,10 +30,10 @@ class DPConfig:
 class DPResult:
     # Outputs reconstructed from the optimal policy.
     cost_kg: float              # [kg], total MDO consumption
-    soc_opt: np.ndarray        # [-], optimal SoC trajectory
-    n_active_opt: np.ndarray   # [-], optimal number of online DGs at each step
-    p_bess_opt_kw: np.ndarray  # [kW], BESS power at each step
-    p_dg_opt_kw: np.ndarray    # [kW], DG power set point at each step
+    soc_opt: np.ndarray         # [-], optimal SoC trajectory
+    n_active_opt: np.ndarray    # [-], optimal number of online DGs at each step
+    p_bess_opt_kw: np.ndarray   # [kW], BESS power at each step
+    p_dg_opt_kw: np.ndarray     # [kW], DG power set point at each step
 
 # ------------------------------ Dynamic Programming SOLVER -------------------------------
 
@@ -68,24 +68,39 @@ def run_dp(p_load_kw: np.ndarray,
     L = len(cfg.soc_grid)                       # number of SOC states
     N = cfg.ndg_installed                       # max number of DGs
 
-    # ---------- DP tables ----------
-    INF = 1e30
-    J = np.full((T, L, N), INF, dtype=float) # cost‑to‑go
-    prev_idx = -np.ones((T, L, N, 2), dtype=int) # backpointers: (s_prev, n_prev)
-    p_bess_used = np.full((T, L, N), np.nan, dtype=float) # chosen BESS dispatch
-    p_dg_used = np.full((T, L, N), np.nan, dtype=float) # resulting DG setpoint
+    # --- Connectivity check: can we move by one grid step in one dt? ---
+    band = float(bes.soc_max - bes.soc_min)         # e.g., 0.60 for 20->80 %
+    soc_step = float(np.min(np.diff(cfg.soc_grid))) # min grid spacing in fraction
+    dt_pos = float(np.min(dt_min[1:]))              # smallest positive step (min)
 
-    # ---------- initial state (SOC guess and initial commitment heuristic) ----------
+    delta_soc_maxUP  =  bes.eta_c * bes.pmax_kw * (dt_pos) / bes.e_kwh        # max +Delta SoC per step ----- missing /60?
+    delta_soc_maxDOWN = (1.0/bes.eta_d) * bes.pmax_kw * (dt_pos) / bes.e_kwh  # max -Delta SoC per step ---- missing /60?
 
+    if soc_step > delta_soc_maxUP or soc_step > delta_soc_maxDOWN:
+        raise RuntimeError(
+            f"SOC grid too fine for Pmax and dt: grid_step={soc_step:.5f}, "
+            f"max_up={delta_soc_maxUP:.5f}, max_down={delta_soc_maxDOWN:.5f}. "
+            f"Decrease L (coarser SOC grid) or increase dt."
+        )
+
+    # ---------- DP tables (node initaliser) ----------
+    INF = 1e20
+    J = np.full((T, L, N), INF, dtype=float)                # cost‑to‑go
+    prev_index = -np.ones((T, L, N, 2), dtype=int)          # backpointers: (s_prev, n_prev)
+    p_bess_used = np.full((T, L, N), np.nan, dtype=float)   # chosen BESS dispatch
+    p_dg_used = np.full((T, L, N), np.nan, dtype=float)     # resulting DG setpoint
+    p_lowlimit = cfg.alpha_min * bes.pmax_kw                # BESS lower power limit
+    p_highlimit = cfg.alpha_max * bes.pmax_kw               # BESS higher power limit
+
+    # ---------- Root node (no battery usage) ----------
     # Start SOC at the middle of the allowed band unless specified otherwise
     soc0 = 0.5*(bes.soc_min + bes.soc_max)
     soc0_id = int(np.argmin(np.abs(cfg.soc_grid - soc0)))
     # Heuristic: minimum number of DGs to carry the first load at max fraction
-    n0 = max(1, int(np.ceil((p_load_kw[0] / dg.pmax_kw) / dg.pmax_frac)))
-    n0 = min(n0, N)
+    n0 = int(np.ceil((p_load_kw[0] / (dg.pmax_frac*dg.pmax_kw))))
 
     # ---------- time t = 0: seed feasible starting points ----------
-    for n in range(1, n0+1):
+    for n in range(1, N+1):
         p_bess0 = 0.0
         pdg = power_balance(p_load_kw[0], p_bess0, n)
         if pdg == 0 or (dg.pmin_frac*dg.pmax_kw <= pdg <= dg.pmax_frac*dg.pmax_kw):
@@ -102,52 +117,54 @@ def run_dp(p_load_kw: np.ndarray,
             p_dg_used[0, soc0_id, n-1] = pdg
 
     # ---------- DP recursion for t = 1,...,T-1 -----------
-    # ---------- O(T*L2*N2) because for each (t,s,n) the code scan all (s',n')-----------
+    # ---------- Computational complexity: O(T*L2*N2) - for each (t,s,n) the code scan all (s',n')-----------
     for t in range(1, T):
+        # Stage - time index
         dt = dt_min[t]
-        for s_idx, soc in enumerate(cfg.soc_grid):
+        for s_index, soc in enumerate(cfg.soc_grid):
             for n in range(1, N+1):
                 reached_cost = INF
                 reached_state = None # (sp, n_prev-1, p_bess, pdg)
 
-                # Consider all previous SoC indices and previous DG counts
+                # Consider all previous SoC and DG indices
                 for sp in range(L):
-                    for npv in range(max(1, n-1), min(N, n+1)+1):
+                    # SoC index
+                    soc_prev = cfg.soc_grid[sp]
+                    # --- choose battery power that realises the transition soc_prev -> soc ---
+                    # --- compute required battery power from SOC change ---
+                    # pbatt = -delta_soc * E / dt, with efficiency handled by
+                        # if charging (soc > soc_prev): delta_soc /= eta_c
+                        # if discharging (soc <= soc_prev): delta_soc *= eta_d
+                    # Here SOC is in [0,1], dt in minutes, E in kWh, so power is kW via /(dt/60).
+                    delta_soc = soc - soc_prev # >0 -> charging, <0 -> discharging
+                    if delta_soc > 0:
+                        # charging -> p_bess < 0
+                        p_bess = -(delta_soc / bes.eta_c) * bes.e_kwh / (dt) # missing /60?
+                    else:
+                        # discharging or equal -> p_bess ≥ 0
+                        p_bess = -(delta_soc * bes.eta_d) * bes.e_kwh / (dt) # missing /60?
+
+                    # Enforce both alpha window (if used) and bes.pmax_kw
+                    if not (p_lowlimit <= p_bess <= p_highlimit):
+                        continue  # transition infeasible at this step
+
+                    p_bess = float(p_bess)
+
+                    # --- Compute DG power from power balance with n active DGs ---
+                    pdg = power_balance(p_load_kw[t], p_bess, n)
+
+                    # --- DG power feasibility ---
+                    if not (pdg == 0 or (dg.pmin_frac*dg.pmax_kw <= pdg <= dg.pmax_frac*dg.pmax_kw)):
+                        continue
+
+                    for npv in range(1,N+1):
+                        # DGs index
                         """ Code improvement range(max(1, n-1), min(N, n+1)+1):
                         - Limit DG commitment changes: iterate n' only near n (e.g., n-1..n+1) instead of 1..N. That typically respects ramping/operational realism and collapses the N2 factor;
                         - Reject impossible SOC jumps early: with the fix above transitions that require |p_bess| > pmax are skipped. That slashes the L2 factor."""
                         prev_cost = J[t-1, sp, npv-1]
                         if not np.isfinite(prev_cost):
-                            # skip unreachable states
-                            continue
-                        
-                        soc_prev = cfg.soc_grid[sp]
-
-                        # --- choose battery power that realises the transition soc_prev -> soc ---
-                        # --- compute required battery power from SOC change ---
-                        # pbatt = -delta_soc * E / dt, with efficiency handled by
-                            # if charging (soc > soc_prev): delta_soc /= eta_c
-                            # if discharging (soc <= soc_prev): delta_soc *= eta_d
-                        # Here SOC is in [0,1], dt in minutes, E in kWh, so power is kW via /(dt/60).
-                        delta_soc = soc - soc_prev # >0 -> charging, <0 -> discharging
-                        if delta_soc > 0:
-                            # charging -> p_bess < 0
-                            p_bess = -(delta_soc / bes.eta_c) * bes.e_kwh / (dt/60.0)
-                        else:
-                            # discharging or equal -> p_bess ≥ 0
-                            p_bess = -(delta_soc * bes.eta_d) * bes.e_kwh / (dt/60.0)
-
-                        # Enforce both alpha window (if used) and bes.pmax_kw
-                        p_lo = cfg.alpha_min * bes.pmax_kw
-                        p_hi = cfg.alpha_max * bes.pmax_kw
-                        if not (p_lo <= p_bess <= p_hi):
-                            continue  # transition infeasible at this step
-
-                        p_bess = float(p_bess)
-
-                        # --- Compute DG power from power balance with n active DGs ---
-                        pdg = power_balance(p_load_kw[t], p_bess, n)
-                        if not (pdg == 0 or (dg.pmin_frac*dg.pmax_kw <= pdg <= dg.pmax_frac*dg.pmax_kw)):
+                            # skip unreachable previous states
                             continue
 
                         # --- Ramp‑rate feasibility against previous DG setpoint ---
@@ -175,22 +192,52 @@ def run_dp(p_load_kw: np.ndarray,
 
                 # Write DP table if a feasible predecessor was found
                 if reached_state is not None:
-                    J[t, s_idx, n-1] = reached_cost
-                    prev_idx[t, s_idx, n-1] = (reached_state[0], reached_state[1])
-                    p_bess_used[t, s_idx, n-1] = reached_state[2]
-                    p_dg_used[t, s_idx, n-1]   = reached_state[3]
+                    J[t, s_index, n-1] = reached_cost
+                    prev_index[t, s_index, n-1] = (reached_state[0], reached_state[1])
+                    p_bess_used[t, s_index, n-1] = reached_state[2]
+                    p_dg_used[t, s_index, n-1]   = reached_state[3]
+        
+        # ---------- Check that the initial state is not isolated ----------
+        if not np.any(np.isfinite(J[t, soc0_id, :])):
+            raise RuntimeError(
+                f"No reachable states at t={t} for SoC index {soc0_id} "
+                f"(SoC={cfg.soc_grid[soc0_id]:.3f}). "
+                "Coarsen SOC grid or relax constraints."
+            )
 
     # ---------- Choose terminal n at final time and reconstruct policy ----------
-    sT = soc0_id                            # target terminal SOC index
-    end_slice = J[-1, sT, :]                # costs at t=T-1 with SOC=sT
-    n_end = int(np.argmin(end_slice)) + 1   # best terminal DG count
-    cost = float(end_slice[n_end-1])        # minimum total fuel [kg]
+    sT = soc0_id  # same SoC index at end as at start
+
+    n_end = int(np.ceil(p_load_kw[-1] / (dg.pmax_frac*dg.pmax_kw)))
+    row = J[-1, sT, :]
+    if not np.isfinite(row[n_end-1]):
+        # No feasible path with the required n_end at fixed SOC
+        # Fall back to the nearest *reachable* n that still covers the load
+        mask = np.isfinite(row)
+        if not mask.any():
+            raise RuntimeError("No feasible terminal state with fixed SOC.")
+        # Prefer n >= n_end (cover load), otherwise the cheapest reachable n
+        candidates = np.where(mask)[0] + 1
+        n_ge = candidates[candidates >= n_end]
+        if len(n_ge):
+            n_end = int(n_ge[np.argmin(row[n_ge-1])])
+        else:
+            n_end = int(candidates[np.argmin(row[candidates-1])])
+
+    # Use that terminal commitment; do NOT argmin over n
+    cost = float(J[-1, sT, n_end-1])    # np indexing is 0-based
+    if not np.isfinite(cost):
+        raise RuntimeError(
+            f"DP infeasible with fixed SoC: cannot end at s={sT} (SoC={cfg.soc_grid[sT]:.3f}) "
+            f"and n={n_end}. Adjust SOC grid or dt."
+        )
 
     # Allocate trajectories for reconstruction
     soc_opt = np.zeros(T, dtype=float)
     n_opt = np.zeros(T, dtype=int)
     p_bess_tr = np.zeros(T, dtype=float)
     p_dg_tr   = np.zeros(T, dtype=float)
+    print("finite end states at sT:", np.where(np.isfinite(J[-1, soc0_id, :]))[0] + 1)
 
     # Backtrack
     s = sT
@@ -201,7 +248,9 @@ def run_dp(p_load_kw: np.ndarray,
         p_bess_tr[t] = p_bess_used[t, s, n]
         p_dg_tr[t]   = p_dg_used[t, s, n]
         if t > 0:
-            ps, pn = prev_idx[t, s, n]
+            ps, pn = prev_index[t, s, n]
+            if ps < 0 or pn < 0:
+                raise RuntimeError(f"Unreachable state at t={t}, s={s}, n={n+1}")
             s, n = int(ps), int(pn)
 
     # Package results

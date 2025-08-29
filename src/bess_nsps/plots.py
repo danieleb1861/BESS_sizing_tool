@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+plt.rcParams['path.simplify'] = False
 
 def _percent_axis_data(t_min):
     """Return time relative to start (same units as t_min) and its span."""
@@ -40,7 +41,8 @@ def plot_load_sharing(t_min, p_load, p_bess, p_dg_per, n_active, outdir, stem: s
     fig = plt.figure(figsize=(12,6))
     ax1 = fig.add_subplot(2,1,1)
     ax1.grid(True)
-    ax1.step(t_rel, p_load, where='post', linewidth=1.5, label='Load')
+    # ax1.step(t_rel, p_load, where='post', linewidth=1.5, label='Load')
+    ax1.scatter(t_rel, p_load, s=10, c='tab:blue', marker='o', label='Load', zorder=3)
     ax1.plot(t_rel, total_dg, linewidth=1.2, label='DG total')
     ax1.plot(t_rel, p_bess, linewidth=1.0, label='BESS (+discharge)')
     _percent_xticks(ax1, t_end)

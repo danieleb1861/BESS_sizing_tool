@@ -97,15 +97,15 @@ def compute_kpis(p_bess_kw: np.ndarray,
                  batt_pmax_kw: Optional[float] = None
                  ) -> KPIs:
     
-    # Average absolute C‑rate (per hour). Guard against E=0.
-    c_rate = np.abs(p_bess_kw) / max(bes.e_kwh, 1e-9)
+    # Average absolute C‑rate (per hour).
+    c_rate = np.abs(p_bess_kw) / bes.e_kwh
     c_rate_mean = float(np.nanmean(c_rate))
     # Depth of discharge over the considered window
     dod_mean = float(np.nanmax(soc) - np.nanmin(soc))
     # Energy throughput: integral of |P_bess| dt [kWh]
     e_through = float(np.nansum(np.abs(p_bess_kw) * (dt_min/60.0)))
     # Effective full cycles per year (proxy). The factor 2 assumes a full cycle corresponds to charge + discharge between the reference DoD band.
-    efc = 2.0 * (days_year / max(days_leg,1)) * (dod_mean / max(dod_max,1e-9))
+    efc = 2.0 * (days_year / max(days_leg,1)) * (dod_mean / dod_max)
     # Backup time at rated power, using usable SOC band
     t_backup = bes.backup_minutes()
     # Volume proxy

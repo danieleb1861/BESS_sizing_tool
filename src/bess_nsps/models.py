@@ -41,7 +41,7 @@ def sfoc_interp_g_per_kwh(p_kw: np.ndarray, p_grid_kw: np.ndarray, sfoc: np.ndar
 
 def power_balance(p_load_kw: float, p_batt_kw: float, n_active: int) -> float:
     # Power balance: compute generator power setpoint to meet load at each instant.
-    return (p_load_kw - p_batt_kw) / max(n_active, 1)
+    return (p_load_kw - p_batt_kw) / n_active
 
 def bess_soc_step(soc_prev: float, p_bess_kw: float, dt_min: float, bes: 'BESSpec') -> float:
     # BESS state of charge

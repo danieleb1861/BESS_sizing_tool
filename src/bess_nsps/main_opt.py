@@ -21,7 +21,6 @@ import h5py
 from tqdm import tqdm
 from pathlib import Path
 from itertools import product
-from datetime import datetime
 
 # Profile I/O utilities
 from .data import choose_profiles, load_profile
@@ -59,7 +58,7 @@ def build_dg(pmax_kw: float):
 
 def nondominated(F: np.ndarray) -> np.ndarray:
     # Return a boolean mask of Pareto‑nondominated rows of F.
-    # Expects F with columns as objectives to *minimize*. A point i is dominated if some j has F[j] ≤ F[i] in all objectives and < in at least one.
+    # Expects F with columns as objectives to *minimise*. A point i is dominated if some j has F[j] ≤ F[i] in all objectives and < in at least one.
 
     N = F.shape[0]
     mask = np.ones(N, dtype=bool)
@@ -109,7 +108,7 @@ def save_trace_h5(h5path, group, t_min, pow_load_kw, res, dg, bes, cfg, meta):
         }.items():
             if name in g:
                 del g[name]
-            g.create_dataset(name, data=arr, compression="lzf")  # faster than gzip
+            g.create_dataset(name, data=arr, compression="lzf")
         g.attrs.update({
             "fuel_kg": float(res.cost_kg),
             "bess_pmax_kw": float(bes.pmax_kw),
@@ -162,8 +161,7 @@ def main():
     ap.add_argument("--save-traces", action="store_true",
                     help="Save HDF5 traces for plotted runs (uses cached DP results).")
 
-
-    # Windowing (minute-native; also supports datetime-like convenience)
+    # Windowing (minute-native; also supports datetime-like strings)
     ap.add_argument("--dt-start", type=str, default=None,
                     help='Datetime start (e.g. "2024-05-01 15:04:20" or "15:04:20")')
     ap.add_argument("--dt-end", type=str, default=None,
@@ -189,16 +187,14 @@ def main():
     from datetime import datetime
     RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-    # Per-run folder so multiple runs don’t overwrite
+    # Folder creation for output plots (multiple runs don’t overwrite)
     outdir_plots_run = os.path.join(outdir_plots, RUN_ID)
     os.makedirs(outdir_plots_run, exist_ok=True)
-
    
     # ---- Design grids ----
-
     p_grid = np.linspace(args.bess_pmin, args.bess_pmax, args.bess_pesteps)
     e_grid = np.linspace(args.bess_emin, args.bess_emax, args.bess_esteps)
-    num_soc = int(1 * 100*(args.soc_max - args.soc_min))
+    num_soc = int(2 * 100*(args.soc_max - args.soc_min))
     soc_grid = np.linspace(args.soc_min, args.soc_max, num_soc)
 
     # Plant specs and DP config
