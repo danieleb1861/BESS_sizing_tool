@@ -62,25 +62,64 @@ def run_dp(p_load_kw: np.ndarray,
         Minimum fuel cost and associated optimal trajectories.
     """
 
-    # ---------- basic dimensions ----------
+    # ---------- Basic dimensions ----------
     T = len(p_load_kw)                          # horizon length
     dt_min = np.diff(t_min, prepend=t_min[0])   # [min], step durations
     L = len(cfg.soc_grid)                       # number of SOC states
     N = cfg.ndg_installed                       # max number of DGs
 
     # --- Connectivity check: can we move by one grid step in one dt? ---
-    band = float(bes.soc_max - bes.soc_min)         # e.g., 0.60 for 20->80 %
-    soc_step = float(np.min(np.diff(cfg.soc_grid))) # min grid spacing in fraction
-    dt_pos = float(np.min(dt_min[1:]))              # smallest positive step (min)
+    band = float(bes.soc_max - bes.soc_min)                           # e.g., 0.60 for 20->80 %
+    soc_step = float(np.min(np.diff(cfg.soc_grid)))                   # min grid spacing in fraction
+    dt_pos = float(np.min(dt_min[1:]))                                # smallest positive step (min)
+    dt_h_min = float(np.min(np.diff(t_min, prepend=t_min[0])) / 60.0) # [h]
 
-    delta_soc_maxUP  =  bes.eta_c * bes.pmax_kw * (dt_pos) / bes.e_kwh        # max +Delta SoC per step ----- missing /60?
-    delta_soc_maxDOWN = (1.0/bes.eta_d) * bes.pmax_kw * (dt_pos) / bes.e_kwh  # max -Delta SoC per step ---- missing /60?
+    # ---- Feasibility diagnostic (SoC grid vs dt vs Pmax) ----
+    delta_soc_maxUP  =  -cfg.alpha_min * bes.eta_c * bes.pmax_kw * (dt_pos/60.0) / bes.e_kwh        # (+) charge - max +Delta SoC per step ----- missing /60?
+    delta_soc_maxDOWN = cfg.alpha_max * (1.0/bes.eta_d) * bes.pmax_kw * (dt_pos/60.0) / bes.e_kwh  # (-) discharge - max -Delta SoC per step ---- missing /60?
+    # If alpha window is wide (e.g. [-1, 1]), this equals bes.pmax_kw both ways.
+
+    # # # # dSoC_phys = min(delta_soc_maxUP, delta_soc_maxDOWN)
+
+    # # # # # Minimum dt needed for current grid step
+    # # # # # (hours; convert to s/min as you prefer)
+    # # # # dt_h_needed_up = (soc_step * bes.e_kwh) / (Pchg_max * bes.eta_c)
+    # # # # dt_h_needed_down = (soc_step * bes.e_kwh * bes.eta_d) / Pdis_max
+    # # # # dt_h_needed = max(dt_h_needed_up, dt_h_needed_down)
+
+    # # # # # Minimum number of grid points needed for current dt
+    # # # # # Use a safety factor (e.g. 0.8) so transitions are comfortably feasible
+    # # # # safety    = 0.8
+    # # # # dSoC_target = safety * dSoC_phys
+    # # # # L_needed  = int(np.ceil(band / dSoC_target)) + 1
+
+    # # # # print(
+    # # # #     f"[DP check] dt_min={dt_h_min*3600:.2f}s | "
+    # # # #     f"grid_step={soc_step:.6f} | "
+    # # # #     f"ΔSoC_phys/step={dSoC_phys:.6f} (up={delta_soc_maxUP:.6f}, down={delta_soc_maxDOWN:.6f}) | "
+    # # # #     f"L_needed≈{L_needed} | dt_needed≈{dt_h_needed*60:.2f} min"
+    # # # # )
+
+    # # Hard guard (choose ONE of the two, or keep both as warnings)
+    # if soc_step > dSoC_phys:
+    #     raise RuntimeError(
+    #         "SOC grid too coarse for current dt and Pmax.\n"
+    #         f"grid_step={soc_step:.6f} > ΔSoC_phys/step={dSoC_phys:.6f}. "
+    #         f"Action: increase L to ≥ {L_needed} or increase dt to ≥ {dt_h_needed*60:.2f} min."
+    #     )
+    # # Alternatively:
+    # if dt_h_min < dt_h_needed:
+    #     raise RuntimeError(
+    #         "Time step too small for current SOC grid and Pmax.\n"
+    #         f"dt_min={dt_h_min*60:.4f} min < dt_needed={dt_h_needed*60:.4f} min. "
+    #         f"Action: increase dt or refine grid to L ≥ {L_needed}."
+    #     )
 
     if soc_step > delta_soc_maxUP or soc_step > delta_soc_maxDOWN:
         raise RuntimeError(
-            f"SOC grid too fine for Pmax and dt: grid_step={soc_step:.5f}, "
-            f"max_up={delta_soc_maxUP:.5f}, max_down={delta_soc_maxDOWN:.5f}. "
-            f"Decrease L (coarser SOC grid) or increase dt."
+            f"SOC grid too coarse for given P_batt_max and dt: "
+            f"grid_step={soc_step:.5f}, max_up={delta_soc_maxUP:.5f}, max_down={delta_soc_maxDOWN:.5f}. "
+            f"Use more SOC points (smaller step) or increase dt."
         )
 
     # ---------- DP tables (node initaliser) ----------
@@ -139,10 +178,10 @@ def run_dp(p_load_kw: np.ndarray,
                     delta_soc = soc - soc_prev # >0 -> charging, <0 -> discharging
                     if delta_soc > 0:
                         # charging -> p_bess < 0
-                        p_bess = -(delta_soc / bes.eta_c) * bes.e_kwh / (dt) # missing /60?
+                        p_bess = -(delta_soc / bes.eta_c) * bes.e_kwh / (dt/60.0) # missing /60?
                     else:
                         # discharging or equal -> p_bess ≥ 0
-                        p_bess = -(delta_soc * bes.eta_d) * bes.e_kwh / (dt) # missing /60?
+                        p_bess = -(delta_soc * bes.eta_d) * bes.e_kwh / (dt/60.0) # missing /60?
 
                     # Enforce both alpha window (if used) and bes.pmax_kw
                     if not (p_lowlimit <= p_bess <= p_highlimit):
@@ -202,7 +241,7 @@ def run_dp(p_load_kw: np.ndarray,
             raise RuntimeError(
                 f"No reachable states at t={t} for SoC index {soc0_id} "
                 f"(SoC={cfg.soc_grid[soc0_id]:.3f}). "
-                "Coarsen SOC grid or relax constraints."
+                "Use more SOC points in the grid or relax constraints."
             )
 
     # ---------- Choose terminal n at final time and reconstruct policy ----------

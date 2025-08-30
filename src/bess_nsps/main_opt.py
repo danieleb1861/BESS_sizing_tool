@@ -194,7 +194,7 @@ def main():
     # ---- Design grids ----
     p_grid = np.linspace(args.bess_pmin, args.bess_pmax, args.bess_pesteps)
     e_grid = np.linspace(args.bess_emin, args.bess_emax, args.bess_esteps)
-    num_soc = int(2 * 100*(args.soc_max - args.soc_min))
+    num_soc = int(38 * 100*(args.soc_max - args.soc_min))
     soc_grid = np.linspace(args.soc_min, args.soc_max, num_soc)
 
     # Plant specs and DP config
