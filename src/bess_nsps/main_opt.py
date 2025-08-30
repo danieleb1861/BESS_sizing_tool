@@ -300,7 +300,7 @@ def main():
                 "efc_per_year": k.efc_per_year,
                 "energy_throughput_kwh": k.energy_throughput_kwh,
                 "t_backup_min": k.t_backup_min,
-                "volume_proxy_m3": k.volume_proxy_m3,
+                "volume_m3": k.volume_m3,
             })
 
             # cache result for later Pareto plotting
@@ -309,7 +309,7 @@ def main():
     # 5) Post processing: Pareto, plots, save CSV & (optionally) traces
     df = pd.DataFrame(rows)
     cols = ["fuel_kg", "c_rate_mean_per_h", "dod_mean",
-            "efc_per_year", "energy_throughput_kwh", "volume_proxy_m3"]
+            "efc_per_year", "energy_throughput_kwh", "t_backup_min", "volume_m3"]
     df["pareto"] = nondominated(df[cols].to_numpy())
 
     # Use cache: plot/save only Pareto points

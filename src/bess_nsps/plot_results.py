@@ -1,4 +1,3 @@
-# plot_results.py
 import os
 import argparse
 import numpy as np
@@ -46,7 +45,8 @@ def _ensure_pareto(df: pd.DataFrame) -> pd.DataFrame:
         "dod_mean",
         "efc_per_year",
         "energy_throughput_kwh",
-        "volume_proxy_m3",
+        "t_backup_min",
+        "volume_m3",
     ]
     cols = [c for c in cand if c in df.columns]
     out = df.copy()
@@ -60,11 +60,12 @@ LABELS = {
     "fuel_pct": "Fuel [% of worst]",
     "bess_pmax_kw": r"$P_{BESS, \max}$ [kW]",
     "bess_e_kwh": r"$E_{BESS, \max}$ [kWh]",
-    "volume_proxy_m3": r"Volume [m³]",
+    "volume_m3": r"Volume [m³]",
     "c_rate_mean_per_h": r"C-rate$_{\mathrm{mean}}$ [h$^{-1}$]",
     "dod_mean": r"DoD$_{\mathrm{mean}}$ [–]",
     "efc_per_year": r"EFC per year [cycles/yr]",
     "energy_throughput_kwh": r"Energy throughput [kWh]",
+    "t_backup_min": r"$t_{backup}$ [min]",
 }
 
 # ---------- Normalization helpers ----------
@@ -89,25 +90,29 @@ def _add_normalized_columns(df: pd.DataFrame, dg_rated: float) -> pd.DataFrame:
 
 # Which direction is "better" for the Y metric in the (fuel, Y) plane.
 # We'll always minimize fuel; for Y we either maximize or minimize as listed below.
-Y_MAXIMIZE = {
-    "bess_pmax_kw",        # higher power is better
-    "bess_e_kwh",          # higher energy is better
-    "efc_per_year",        # more cycles/yr is better
-}
-Y_MINIMIZE = {
-    "volume_proxy_m3",     # smaller volume is better
-    "c_rate_mean_per_h",   # lower stress is better
-    "dod_mean",            # lower average DoD is better
-    "energy_throughput_kwh"  # (if used)
-}
+# Y_MAXIMIZE = {
+#     "bess_pmax_kw",          # higher power is better
+#     "bess_e_kwh",            # higher energy is better
+#     "efc_per_year"           # more cycles/yr is better
+# }
+# Y_MINIMIZE = {
+#     "c_rate_mean_per_h",     # lower stress is better
+#     "dod_mean",              # lower average DoD is better
+#     "efc_per_year",
+#     "energy_throughput_kwh", # (if used)
+#     "t_backup_min",
+#     "volume_m3"              # smaller volume is better
+# }
 
 DEFAULT_VARS = [
-    "bess_pmax_kw",
-    "bess_e_kwh",
-    "volume_proxy_m3",
+    # "bess_pmax_kw",
+    # "bess_e_kwh",
     "c_rate_mean_per_h",
     "dod_mean",
     "efc_per_year",
+    "energy_throughput_kwh",
+    "t_backup_min",
+    "volume_m3",
 ]  # 6 subplots
 
 
@@ -206,12 +211,14 @@ def plot_pareto_grid(
             y = gg[var].to_numpy(float)
             fuel = gg["fuel_pct"].to_numpy(float)
 
-            # convert to an all-minimization array for _nondominated
-            if var in Y_MAXIMIZE:
-                y_for_min = -y          # maximizing Y == minimizing (-Y)
-            else:
-                # default to minimizing (covers Y_MINIMIZE and any unknown -> conservative)
-                y_for_min = y
+            y_for_min = y
+
+            # # convert to an all-minimization array for _nondominated
+            # if var in Y_MAXIMIZE:
+            #     y_for_min = -y          # maximizing Y == minimizing (-Y)
+            # else:
+            #     # default to minimizing (covers Y_MINIMIZE and any unknown -> conservative)
+            #     y_for_min = y
 
             arr = np.column_stack([fuel, y_for_min])
             pareto_mask = _nondominated(arr)
@@ -315,8 +322,6 @@ def main():
             pareto_only=args.heatmap_pareto_only,
             mark_min=True,
         )
-
-
 
 if __name__ == "__main__":
     main()
