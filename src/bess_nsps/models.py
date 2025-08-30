@@ -15,9 +15,9 @@ class DGSpec:
         # Derive default ramp limits if not provided
         # Example: reach pmax in ~20 s up, ~10 s down
         if self.ramp_up_kw_per_min is None:
-            self.ramp_up_kw_per_min = self.pmax_kw / (10/60.0)  # [kW/min]
+            self.ramp_up_kw_per_min = self.pmax_kw / (30/60.0)  # [kW/min]
         if self.ramp_dn_kw_per_min is None:
-            self.ramp_dn_kw_per_min = -self.pmax_kw / (10/60.0) # [kW/min]
+            self.ramp_dn_kw_per_min = -self.pmax_kw / (20/60.0) # [kW/min]
 
 @dataclass
 class BESSpec:

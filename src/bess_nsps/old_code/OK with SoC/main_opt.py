@@ -154,11 +154,6 @@ def main():
     ap.add_argument("--alpha-min", type=float, default=-1.0)
     ap.add_argument("--alpha-max", type=float, default=1.0)
 
-    # BESS control grid
-    ap.add_argument("--nbatt-steps", type=int, default=41,
-                help="Number of discrete battery power actions in [-Pmax, +Pmax].")
-
-
     # Outputs
     ap.add_argument("--save", type=str, default="outputs/results.csv")
     ap.add_argument("--plots", action="store_true")
@@ -199,16 +194,17 @@ def main():
     # ---- Design grids ----
     p_grid = np.linspace(args.bess_pmin, args.bess_pmax, args.bess_pesteps)
     e_grid = np.linspace(args.bess_emin, args.bess_emax, args.bess_esteps)
+    num_soc = int(38 * 100*(args.soc_max - args.soc_min))
+    soc_grid = np.linspace(args.soc_min, args.soc_max, num_soc)
 
     # Plant specs and DP config
     dg = build_dg(args.dg_pmax)
     cfg = DPConfig(
         ndg_installed=args.ndg,
-        nbatt_steps=args.nbatt_steps,
+        soc_grid=soc_grid,
         alpha_min=args.alpha_min,
         alpha_max=args.alpha_max,
     )
-
     
     # Prepare output dir
     os.makedirs(os.path.dirname(args.save), exist_ok=True)
