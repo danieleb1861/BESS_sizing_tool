@@ -1,6 +1,14 @@
 [//]: # (D:\Files\0_Dottorato\Calculations\0-Software\3-Python\BESS_sizing_tool> pandoc README.md -o README.pdf --pdf-engine=pdflatex)
 
-# Battery Energy Storage System sizing for Naval Ship Power Systems — Open Access Tool
+## Battery Energy Storage System sizing for Naval Ship Power Systems — Open Access Tool
+
+<div align="center"
+
+[![python](https://img.shields.io/badge/-python-000000?logo=python&logoColor=white)](https://www.python.org/)
+[![MathWorks](https://img.shields.io/badge/MathWorks-MATLAB-0076A8?logo=mathworks&logoColor=white)](https://www.mathworks.com/products/matlab.html)
+[![CLI](https://img.shields.io/badge/-CLI-000000?logo=gnu-bash&logoColor=white)](https://en.wikipedia.org/wiki/Command-line_interface)
+
+</div>
 
 A fast, practical tool to **size and evaluate Battery Energy Storage Systems (BESS)** for hybrid diesel–battery power plants.  
 It sweeps BESS **power/energy ratings** (outer loop) and, for each configuration, solves an **inner dynamic programming optimiser** to minimise **fuel** under generator and battery constraints. It then computes **KPIs** and highlights the **Pareto** set. Optional plotting is available to estimate performances.
