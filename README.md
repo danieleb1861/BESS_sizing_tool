@@ -8,6 +8,10 @@
 [![MathWorks](https://img.shields.io/badge/MathWorks-MATLAB-0076A8?logo=mathworks&logoColor=white)](https://www.mathworks.com/products/matlab.html)
 [![CLI](https://img.shields.io/badge/-CLI-000000?logo=gnu-bash&logoColor=white)](https://en.wikipedia.org/wiki/Command-line_interface)
 
+[![status](https://img.shields.io/badge/status-beta-orange?logo=githubactions&logoColor=white)](https://semver.org/)
+![license](https://img.shields.io/badge/license-MIT-green)
+[![research](https://img.shields.io/badge/research-Applied%20Energy-blue?logo=elsevier&logoColor=white)](https://doi.org/10.1016/j.apenergy.2025.126983)
+
 </div>
 
 A fast, practical tool to **size and evaluate Battery Energy Storage Systems (BESS)** for hybrid diesel–battery power plants.  
@@ -274,13 +278,133 @@ python scripts/plot_pareto_grid.py `
 
 ---
 
-# License and citation
+# How to contribute
 
-Distributed under the **MIT License** (see `LICENSE`).  
-If you use this in research or reports, please cite the associated open-access article and this repository.
+People who are in the game of BESS sizing and optimisation are welcome.
 
-All rights reserved.
+The repository is designed to progressively integrate:
+- anonymised operational ship load profiles,
+- validated control strategies,
+- mission-specific KPIs,
+- optimisation benchmarks,
+- alternative optimisation algorithms.
+
+## Contribution categories
+
+### 1. Operational datasets
+Contribute anonymised:
+- shipboard load profiles, distinguishing:
+  - navigation,
+  - manoeuvre,
+- operational metadata.
+
+For example, your datasets could be named -------
+
+Format:
+- `.csv`
+- `.mat`
+- UTC timestamps
+- power in kW
+
+Please remove:
+- classified information,
+- hull identifiers,
+- navigation-sensitive metadata.
+
+---
+
+### 2. Control and optimisation algorithms
+Examples of new contribution may be:
+- RL-based optimisation
+- methaeuristics
+
+Contributions should include:
+- reproducible configuration,
+- benchmark profile,
+- computational cost notes,
+- references if derived from literature.
+
+---
+
+### 3. Validation and benchmarking
+Useful contributions:
+- comparison against real fuel logs,
+- sensitivity studies,
+- runtime profiling,
+- convergence analysis.
+
+---
+
+### 4. Scientific reproducibility
+Please provide:
+- exact and standardised CLI commands,
+- solver settings,
+- assumptions,
+- references.
+
+---
+
+## Suggested workflow
+
+1. Fork repository
+2. Create feature branch
+3. Add contribution in isolated module
+4. Provide Minimal Working Example
+5. Open Pull Request with:
+   - brief technical description,
+   - assumptions,
+   - expected impact.
+
+Let's write your own scientific article then!
+
+---
+
+## Field-data contribution template
+
+Please include:
+- vessel category,
+- installed DG architecture,
+- sample rate,
+- mission type,
+- every known data limitations.
 
 ---
 
 **Need help?** Open an issue with your `.csv` (or `.mat`) variable names and a short example; we’ll help you wire it up.
+
+---
+
+# License and citation
+
+Distributed under the **MIT License** (see `LICENSE`).
+
+If you use this repository in academic work, industrial studies, technical reports, or derivative software, please cite the associated paper.
+
+<details>
+<summary><b>📚 BibTeX</b></summary>
+
+```bibtex
+@article{BelvisiFigari2026,
+  title   = {Multi-objective optimisation-based approach for shipboard energy-efficient battery energy storage sizing leveraging operational data},
+  author  = {Belvisi, Daniele and Figari, Massimo},
+  journal = {Applied Energy},
+  volume  = {404},
+  pages   = {126983},
+  year    = {2026},
+  doi     = {10.1016/j.apenergy.2025.126983}
+}
+
+```
+
+</details> <details> <summary><b>⚡ IEEE</b></summary>
+D. Belvisi and M. Figari, “Multi-objective optimisation-based approach for shipboard energy-efficient battery energy storage sizing leveraging operational data,” Applied Energy, vol. 404, p. 126983, 2026, doi: 10.1016/j.apenergy.2025.126983.
+
+</details> <details> <summary><b>🧪 Vancouver</b></summary>
+Belvisi D, Figari M. Multi-objective optimisation-based approach for shipboard energy-efficient battery energy storage sizing leveraging operational data. Applied Energy. 2026;404:126983. doi:10.1016/j.apenergy.2025.126983
+
+</details> <details> <summary><b>🏛 Chicago</b></summary>
+Belvisi, Daniele, and Massimo Figari. 2026. “Multi-objective Optimisation-Based Approach for Shipboard Energy-Efficient Battery Energy Storage Sizing Leveraging Operational Data.” Applied Energy 404: 126983. https://doi.org/10.1016/j.apenergy.2025.126983.
+
+</details> <details> <summary><b>🧠 APA</b></summary>
+Belvisi, D., & Figari, M. (2026). Multi-objective optimisation-based approach for shipboard energy-efficient battery energy storage sizing leveraging operational data. Applied Energy, 404, 126983. https://doi.org/10.1016/j.apenergy.2025.126983
+
