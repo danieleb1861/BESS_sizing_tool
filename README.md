@@ -280,7 +280,9 @@ python scripts/plot_pareto_grid.py `
 
 # How to contribute
 
-People who are in the game of BESS sizing and optimisation are welcome.
+Contributions are welcome from researchers, engineers, operators, and anyone working on shipboard energy systems, hybrid propulsion, BESS sizing, or energy-management optimisation.
+
+The goal is simple: make this repository a practical, reproducible benchmark for **operational-data-driven shipboard BESS sizing**.
 
 The repository is designed to progressively integrate:
 - anonymised operational ship load profiles,
@@ -289,27 +291,30 @@ The repository is designed to progressively integrate:
 - optimisation benchmarks,
 - alternative optimisation algorithms.
 
-## Contribution categories
+## What you can contribute
 
 ### 1. Operational datasets
-Contribute anonymised:
-- shipboard load profiles, distinguishing:
-  - navigation,
-  - manoeuvre,
-- operational metadata.
+Anonymised load profiles are highly valuable, especially if they include:
+- navigation, manoeuvre, harbour, or other operating phases relevant for your vessel;
+- sample rate and unit information;
+- basic vessel or plant metadata, when shareable.
 
-For example, your datasets could be named -------
-
-Format:
+Accepted formats:
 - `.csv`
 - `.mat`
-- UTC timestamps
-- power in kW
 
-Please remove:
-- classified information,
-- hull identifiers,
-- navigation-sensitive metadata.
+Please remove classified information, hull identifiers, sensitive routes, timestamps that reveal operations, and any navigation-sensitive metadata.
+
+Suggested naming:
+- manoeuvres
+    ```text
+    VESSELTYPE_PHASE_SAMPLE_RATE_1st.csv
+    VESSELTYPE_PHASE_SAMPLE_RATE_2nd.csv
+    ```
+- navigation
+    ```text
+    VESSELTYPE_PHASE_SAMPLE_RATE.csv
+    ```
 
 ---
 
