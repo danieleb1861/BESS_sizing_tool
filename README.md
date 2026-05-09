@@ -24,6 +24,30 @@ From there, you can copy and paste command lines.
 
 ---
 
+# Table of Contents
+
+- [Setup the terminal](#setup-the-terminal)
+  - [Install](#install)
+- [Prepare data](#prepare-data)
+- [Run the optimisation](#run-the-optimisation)
+  - [Call Graph Overview](#call-graph-overview)
+- [Manoeuvre/window selection](#manoeuvrewindow-selection)
+- [CLI arguments](#cli-arguments)
+- [Plots](#plots)
+- [Customise](#customise)
+- [Outputs](#outputs)
+- [How to contribute](#how-to-contribute)
+  - [What you can contribute](#what-you-can-contribute)
+    - [Operational datasets](#1-operational-datasets)
+    - [Control and optimisation algorithms](#2-control-and-optimisation-algorithms)
+    - [Validation and benchmarking](#3-validation-and-benchmarking)
+    - [Scientific reproducibility](#4-scientific-reproducibility)
+  - [Suggested workflow](#suggested-workflow)
+  - [Field-data contribution template](#field-data-contribution-template)
+- [License and citation](#license-and-citation)
+
+---
+
 # Setup the terminal
 Go to the project root (adjust path if needed) to set-Location:
 
@@ -389,7 +413,7 @@ If you use this repository in academic work, industrial studies, technical repor
 <summary><b>📚 BibTeX</b></summary>
 
 ```bibtex
-@article{BelvisiFigari2026,
+@article{Belvisi2026optsizing,
   title   = {Multi-objective optimisation-based approach for shipboard energy-efficient battery energy storage sizing leveraging operational data},
   author  = {Belvisi, Daniele and Figari, Massimo},
   journal = {Applied Energy},
