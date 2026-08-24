@@ -14,6 +14,8 @@
 
 </div>
 
+> ⚠️ **Warning:** This repository is not actively maintained.
+
 A fast, practical tool to **size and evaluate Battery Energy Storage Systems (BESS)** for hybrid diesel–battery power plants.  
 It sweeps BESS **power/energy ratings** (outer loop) and, for each configuration, solves an **inner dynamic programming optimiser** to minimise **fuel** under generator and battery constraints. It then computes **KPIs** and highlights the **Pareto** set. Optional plotting is available to estimate performances.
 
@@ -436,4 +438,3 @@ Belvisi, Daniele, and Massimo Figari. 2026. “Multi-objective Optimisation-Base
 
 </details> <details> <summary><b>🧠 APA</b></summary>
 Belvisi, D., & Figari, M. (2026). Multi-objective optimisation-based approach for shipboard energy-efficient battery energy storage sizing leveraging operational data. Applied Energy, 404, 126983. https://doi.org/10.1016/j.apenergy.2025.126983
-
