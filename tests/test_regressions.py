@@ -2,6 +2,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from itertools import product
+from unittest.mock import patch
 
 import numpy as np
 from scipy.io import savemat
@@ -9,7 +11,8 @@ from scipy.io import savemat
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from bess_nsps.kpi import compute_kpis
-from bess_nsps.models import BESSpec
+from bess_nsps.models import BESSpec, DGSpec
+from bess_nsps.dp import DPConfig, run_dp
 from bess_nsps.data import get_mat_window, load_profile
 from bess_nsps.window import slice_by_indices
 
@@ -101,6 +104,82 @@ class MATRegressionTests(unittest.TestCase):
         load, time = slice_by_indices([10, 20, 30, 40], [0, 1, 2, 3],
                                       window["i0"], window["i1"])
         np.testing.assert_array_equal(load, [20, 30])
+
+
+class DPRegressionTests(unittest.TestCase):
+    def setUp(self):
+        self.dg = DGSpec(100., pmax_frac=1., p_grid_kw=np.array([0., 100.]),
+                         ramp_up_kw_per_min=6000., ramp_dn_kw_per_min=-6000.,
+                         sfoc_g_per_kwh=np.array([300., 200.]))
+        self.bes = BESSpec(40., 1000., eta_c=1., eta_d=1.)
+        self.cfg = DPConfig(2, 3, -1., 1.)
+
+    def brute_force(self, load, time):
+        # Independent enumeration of complete schedules, including per-unit ramps.
+        dt = np.diff(time, prepend=time[0])
+        best = np.inf
+        actions = list(product((1, 2), (-40., 0., 40.)))
+        for schedule in product(actions, repeat=len(load)):
+            n, pb = map(np.asarray, zip(*schedule))
+            if pb[0] != 0:
+                continue
+            pg = (load - pb) / n
+            if not np.all(((pg >= 20.) & (pg <= 100.)) | (pg == 0)):
+                continue
+            units = np.where(np.arange(2)[None, :] < n[:, None], pg[:, None], 0.)
+            ramps = np.diff(units, axis=0)
+            if (np.any(ramps > self.dg.ramp_up_kw_per_min * dt[1:, None])
+                    or np.any(ramps < self.dg.ramp_dn_kw_per_min * dt[1:, None])):
+                continue
+            ds = np.where(pb >= 0, pb / self.bes.eta_d, pb * self.bes.eta_c) * dt / 60 / self.bes.e_kwh
+            soc = 0.5 - np.cumsum(ds)
+            if np.any(soc < .2) or np.any(soc > .8) or abs(soc[-1] - .5) > 1e-12:
+                continue
+            cost = np.sum(n * pg * (300. - pg) * dt / 60000.)
+            best = min(best, cost)
+        return best
+
+    def test_cost_matches_exhaustive_search(self):
+        for eta_c, eta_d in [(1., 1.), (.8, .625)]:
+            self.bes.eta_c, self.bes.eta_d = eta_c, eta_d
+            for load in ([120., 80., 160., 80.], [80., 160., 40., 120.]):
+                with self.subTest(load=load, efficiencies=(eta_c, eta_d)):
+                    load = np.asarray(load)
+                    time = np.arange(4) / 60.
+                    result = run_dp(load, time, self.dg, self.bes, self.cfg)
+                    self.assertAlmostEqual(result.cost_kg, self.brute_force(load, time), places=12)
+                    np.testing.assert_allclose(result.n_active_opt * result.p_dg_opt_kw + result.p_bess_opt_kw, load)
+                    self.assertEqual(result.p_bess_opt_kw[0], 0.)
+                    self.assertAlmostEqual(result.soc_opt[-1], result.soc_opt[0], places=12)
+
+    def test_terminal_tolerance_cannot_supply_free_energy(self):
+        result = run_dp([80., 80.], [0., 1 / 60.], self.dg, self.bes, self.cfg)
+        np.testing.assert_array_equal(result.p_bess_opt_kw, [0., 0.])
+
+    def test_resource_limits_raise_instead_of_pruning(self):
+        for name, cap, error in [("STATES_CAP", 1, MemoryError),
+                                 ("TOTAL_STATES_CAP", 1, MemoryError),
+                                 ("TRANSITIONS_CAP", 1, RuntimeError)]:
+            with self.subTest(limit=name), patch("bess_nsps.dp." + name, cap):
+                with self.assertRaisesRegex(error, "resource|exceeds"):
+                    run_dp([120., 80., 160., 80.], np.arange(4), self.dg, self.bes, self.cfg)
+
+    def test_start_and_stop_ramps_are_enforced(self):
+        self.dg.pmin_frac = .6
+        self.dg.ramp_up_kw_per_min = 1.
+        self.dg.ramp_dn_kw_per_min = -1.
+        self.bes.pmax_kw = 0.
+        for load in ([80., 160.], [160., 80.]):
+            with self.subTest(load=load), self.assertRaisesRegex(RuntimeError, "No feasible"):
+                run_dp(load, [0., 1.], self.dg, self.bes, self.cfg)
+
+    def test_invalid_inputs_fail_before_solving(self):
+        for time in ([0., 0.], [1., 0.], [0., np.nan]):
+            with self.subTest(time=time), self.assertRaises(ValueError):
+                run_dp([80., 80.], time, self.dg, self.bes, self.cfg)
+        self.cfg.alpha_max = 2.
+        with self.assertRaises(ValueError):
+            run_dp([80., 80.], [0., 1.], self.dg, self.bes, self.cfg)
 
 
 if __name__ == "__main__":

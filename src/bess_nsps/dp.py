@@ -1,90 +1,16 @@
 """
-Dynamic Programming solver for load dispatch.
+Exact dynamic programming on a finite battery-power grid.
 
-- State at stage t (post-decision): (SoC_cont, n, b_prev_idx)
-- Control at stage t+1            : b_idx  (battery power index)
-- SoC propagation                 : continuous update
-- Ramp constraint                 : compare pdg(t+1,n,b_idx) vs pdg(t,n_prev,b_prev)
-- Cost                            : n * pdg * SFOC * (dt/60) / 1000  [kg]
+State: continuous SoC, active DG count and previous power action. Only
+identical floating-point states are merged; no bucketing or pruning is used.
+Power at t applies over (t-1, t]; fuel and SoC use the same interval.
+Initial battery power is zero; terminal SoC equals the initial midpoint
+within SOC_TOL. Ramps include generator starts/stops, with zero minimum
+ON/OFF times as in the reference configuration.
 
-ASCII state-transition diagram
-
-          stage t                                stage t+1
-   ┌─────────────────────┐    choose control b    ┌─────────────────────┐
-   │ ( SoC_t ,           |                        │ ( SoC_{t+1} ,       │
-   |   n_prev ,          │ ───────────────────▶  │    n ,              │
-   │   b_prev )          │                        │    b                │
-   └─────────────────────┘    fuel + feasibility  └─────────────────────┘
-              ▲                                          |
-              └────────────── backpointer ───────────────┘
-
-
-Legend:
-- SoC_t    : continuous battery state of charge at time t
-- n_prev   : number of DGs online at time t
-- b_prev   : previous battery control index
-- b        : chosen control index at time t+1
-- SoC_{t+1}: next SoC after applying control b over dt
-- n        : number of DGs online at time t+1
-
-Transition checks:
-  - SoC_{t+1} must stay within [SoC_min, SoC_max]
-  - Generator dispatch pdg(t+1,n,b) must be feasible
-  - Ramp constraint: |pdg(t+1,n,b) - pdg(t,n_prev,b_prev)| ≤ ramp limits
-  - Stage cost = n * pdg * SFOC * (dt/60) / 1000 [kg]
-
-Each node encodes:
-  - current SoC value (stored continuous, bucketed only for hashing)
-  - current DG count
-  - previous battery action index
-
-"""
-
-"""
-           Many SoC trajectories (continuous floats)
-                      │
-               [HASHING] → group by epsilon-buckets
-                      │
-           Buckets with best cost inside each
-                      │
-               [PRUNING] → keep at most 600 per slice
-                      │
-          Next stage DP recursion continues...
-
-Hashing prevents explosion due to floating-point noise. Otherwise it is possible to have “infinitely many” distinct SoC values, all only microns apart.
-   Continuous SoC values
-      |       |       |     
-   0.4999  0.5000  0.5032
-
-   ↓ hash into ε-buckets (width=5e-4)
-
-   [ bucket 1000 ]  [ bucket 1006 ]
-     contains 3        contains 2
-     states             states
-
-All values close to 0.50 are hashed into the same bucket key 1000.
-In J[t][n][b], only one entry is stored for that bucket (the cheapest cost path).
-
-Pruning prevents explosion due to combinatorial growth. Even with hashing, every stage multiplies possibilities.
-Example: T=100, N=3, B=41, 600 states per slice → ~7.4e+10 states total.
-
-Slice J[t][n=2][b=+200]
- ┌─────────────────────────┐
- │  1000 buckets in dict   │
- └─────────────────────────┘
-             │
-             └─ sort by cost, keep top 600
-             ↓
- ┌─────────────────────────┐
- │   600 cheapest buckets  │
- └─────────────────────────┘
-
-All candidate buckets (cost-sorted):
- [ cheap-1 ] [ cheap-2 ] ... [ cheap-600 ] [ expensive-601 ] ... [ expensive-1000 ]
-
-Keep only left 600 ← PRUNING
-This keeps the DP tables manageable in size, at the cost of possibly discarding some paths.
-
+Optimality is restricted to this control grid and these plant assumptions,
+within floating-point arithmetic. Exceeding a resource cap raises an error
+without returning an approximate solution.
 """
 
 from dataclasses import dataclass
@@ -108,10 +34,12 @@ class DPResult:
     p_bess_opt_kw: np.ndarray
     p_dg_opt_kw: np.ndarray
 
-# ------------------------------ Hardcoded hashing/pruning params ----------------------
+# ------------------------------ Numerical/resource limits ----------------------
 
-SOC_BUCKET   = 5e-4   # SoC hashing resolution. Smaller = smoother, more states. All SoCs within +-SOC_BUCKET (+-SOC_BUCKET/100 %) end up in the same integer bucket.
-STATES_CAP   = 600    # Max states kept per (t,n,b) slice for pruning.
+SOC_TOL = 1e-12       # Terminal equality tolerance; states are never rounded.
+STATES_CAP = 600      # Max states per (t,n,b); exceeding a cap aborts the solve.
+TOTAL_STATES_CAP = 200_000
+TRANSITIONS_CAP = 2_000_000
 
 # ------------------------------ Helpers ---------------------------------------
 
@@ -125,11 +53,7 @@ def _soc_update(soc_prev: float, p_bess_kw: float, dt_min: float, bes: BESSpec) 
 
 def _ensure_zero(grid: np.ndarray) -> np.ndarray:
     # Ensure 0.0 is present in the control grid.
-    return np.sort(grid if np.min(np.abs(grid)) < 1e-12 else np.r_[grid, 0.0])
-
-def _bucket_soc(soc: float, soc_min: float, eps: float) -> int:
-    # Map continuous SoC to an integer bucket key (hash only).
-    return int(round((soc - soc_min) / max(eps, 1e-12)))
+    return np.unique(np.r_[grid, 0.0])
 
 # ------------------------------ DP solver -------------------------------------
 
@@ -140,15 +64,38 @@ def run_dp(p_load_kw: np.ndarray,
            cfg: DPConfig) -> DPResult:
 
     # ---------- Horizon ----------
+    p_load_kw = np.asarray(p_load_kw, float).ravel()
     T = int(len(p_load_kw))
     t_min = np.asarray(t_min, float).ravel()
+    if (T < 2 or t_min.size != T or not np.all(np.isfinite(p_load_kw))
+            or not np.all(np.isfinite(t_min)) or np.any(np.diff(t_min) <= 0)
+            or np.any(p_load_kw < 0)):
+        raise ValueError("DP needs matching finite loads and strictly increasing times (at least two samples)")
+    if (cfg.ndg_installed < 1 or int(cfg.ndg_installed) != cfg.ndg_installed
+            or cfg.nbatt_steps < 2 or int(cfg.nbatt_steps) != cfg.nbatt_steps
+            or not (-1 <= cfg.alpha_min <= 0 <= cfg.alpha_max <= 1)):
+        raise ValueError("Invalid DG count, power grid or battery power fractions")
+    if not (np.isfinite(bes.e_kwh) and bes.e_kwh > 0
+            and np.isfinite(bes.pmax_kw) and bes.pmax_kw >= 0
+            and 0 <= bes.soc_min < bes.soc_max <= 1
+            and 0 < bes.eta_c <= 1 and 0 < bes.eta_d <= 1):
+        raise ValueError("Invalid battery rating, SoC bounds or efficiencies")
+    if not (np.isfinite(dg.pmax_kw) and dg.pmax_kw > 0
+            and 0 <= dg.pmin_frac <= dg.pmax_frac <= 1
+            and np.isfinite(dg.ramp_up_kw_per_min) and dg.ramp_up_kw_per_min >= 0
+            and np.isfinite(dg.ramp_dn_kw_per_min) and dg.ramp_dn_kw_per_min <= 0):
+        raise ValueError("Invalid generator rating, loading bounds or ramp limits")
     dt_vec = np.diff(t_min, prepend=t_min[0])
 
     N = int(cfg.ndg_installed)
+    if T * N * int(cfg.nbatt_steps) > TOTAL_STATES_CAP:
+        raise MemoryError("Exact DP table allocation exceeds TOTAL_STATES_CAP; shorten the horizon or grid")
     p_grid = _ensure_zero(np.linspace(cfg.alpha_min*bes.pmax_kw,
                                       cfg.alpha_max*bes.pmax_kw,
                                       int(cfg.nbatt_steps)))
     B = p_grid.size
+    if T * N * B > TOTAL_STATES_CAP:
+        raise MemoryError("Exact DP table allocation exceeds TOTAL_STATES_CAP; shorten the horizon or grid")
 
     # ---------- Generator limits ----------
     pmin = dg.pmin_frac * dg.pmax_kw
@@ -157,8 +104,6 @@ def run_dp(p_load_kw: np.ndarray,
     # ---------- SoC params ----------
     soc_min, soc_max = bes.soc_min, bes.soc_max
     soc0 = 0.5*(soc_min + soc_max)
-    eps = SOC_BUCKET
-    s0_key = _bucket_soc(soc0, soc_min, eps)
 
     # ---------- Precompute pdg & SFOC ----------
     pdg  = np.empty((T, N, B), float)
@@ -170,17 +115,19 @@ def run_dp(p_load_kw: np.ndarray,
             pdg[t, ni, :]  = pdg_tn
             sfoc[t, ni, :] = sfoc_interp_g_per_kwh(np.maximum(pdg_tn, 0.0),
                                                     dg.p_grid_kw, dg.sfoc_g_per_kwh)
-    feas_gen = ((pdg >= pmin) & (pdg <= pmax)) | np.isclose(pdg, 0.0)
+    feas_gen = ((pdg >= pmin) & (pdg <= pmax)) | (pdg == 0.0)
 
     # ---------- DP tables ----------
     J = [[ [dict() for _ in range(B)] for _ in range(N) ] for _ in range(T)]
+    states = 0
+    transitions = 0
 
     # ---------- t = 0 ----------
     dt = float(dt_vec[0])
     for ni in range(N):
         n = ni + 1
         for b in range(B):
-            if not np.isclose(p_grid[b], 0.0, rtol=0.0, atol=1e-12):
+            if p_grid[b] != 0.0:
                 continue
             if not feas_gen[0, ni, b]:
                 continue
@@ -188,15 +135,11 @@ def run_dp(p_load_kw: np.ndarray,
             if not (soc_min <= soc1 <= soc_max):
                 continue
             fuel_kg = n * pdg[0, ni, b] * sfoc[0, ni, b] * (dt/60.0) / 1000.0
-            k = _bucket_soc(soc1, soc_min, eps)
+            k = soc1
             cur = J[0][ni][b].get(k)
             if (cur is None) or (fuel_kg < cur[0]):
                 J[0][ni][b][k] = (fuel_kg, soc1, None)
-        # prune
-        for b in range(B):
-            if len(J[0][ni][b]) > STATES_CAP:
-                items = sorted(J[0][ni][b].items(), key=lambda kv: kv[1][0])[:STATES_CAP]
-                J[0][ni][b] = dict(items)
+                states += 1
 
     # ---------- recursion ----------
     for t in range(1, T):
@@ -210,38 +153,44 @@ def run_dp(p_load_kw: np.ndarray,
                     for k_prev, (cost_prev, soc_prev, _) in J[t-1][nip][b_prev].items():
                         pdg_prev = pdg[t-1, nip, b_prev]
                         for b in range(B):
+                            transitions += 1
+                            if transitions > TRANSITIONS_CAP:
+                                raise RuntimeError("Exact DP resource limit: TRANSITIONS_CAP exceeded; no approximate result returned")
                             if not feas_gen[t, ni, b]:
                                 continue
                             dp = pdg[t, ni, b] - pdg_prev
                             if dp > up or dp < dn:
                                 continue
+                            if ni > nip and pdg[t, ni, b] > up:
+                                continue  # Newly started units ramp from zero.
+                            if ni < nip and -pdg_prev < dn:
+                                continue  # Stopped units must ramp down to zero.
                             soc_next = _soc_update(soc_prev, float(p_grid[b]), dt, bes)
                             if not (soc_min <= soc_next <= soc_max):
                                 continue
+                            if t == T - 1 and abs(soc_next - soc0) > SOC_TOL:
+                                continue
                             fuel_kg = n * pdg[t, ni, b] * sfoc[t, ni, b] * (dt/60.0) / 1000.0
                             total = cost_prev + fuel_kg
-                            k = _bucket_soc(soc_next, soc_min, eps)
+                            k = soc_next
                             cur = J[t][ni][b].get(k)
                             if (cur is None) or (total < cur[0]):
+                                if cur is None:
+                                    states += 1
+                                    if len(J[t][ni][b]) >= STATES_CAP or states > TOTAL_STATES_CAP:
+                                        raise MemoryError("Exact DP state resource limit exceeded; no states discarded or approximate result returned")
                                 J[t][ni][b][k] = (total, soc_next, (nip, b_prev, k_prev))
-            # prune
-            for b in range(B):
-                if len(J[t][ni][b]) > STATES_CAP:
-                    items = sorted(J[t][ni][b].items(), key=lambda kv: kv[1][0])[:STATES_CAP]
-                    J[t][ni][b] = dict(items)
 
-    # ---------- terminal condition: enforce SoC_end ≈ SoC_0 ----------
+    # ---------- terminal condition: equal SoC within floating-point tolerance ----------
     best = None
     for ni in range(N):
         for b in range(B):
-            entry = J[T-1][ni][b].get(s0_key)
-            if entry is None:
-                continue
-            cost = entry[0]
-            if (best is None) or (cost < best[0]):
-                best = (cost, T-1, ni, b, s0_key)
+            for k, entry in J[T-1][ni][b].items():
+                cost = entry[0]
+                if (best is None) or (cost < best[0]):
+                    best = (cost, T-1, ni, b, k)
     if best is None:
-        raise RuntimeError("No feasible terminal state at SoC end.")
+        raise RuntimeError("No feasible closed-SoC trajectory on the configured power grid.")
 
     # ---------- backtracking ----------
     best_cost, t, ni, b, k = best
