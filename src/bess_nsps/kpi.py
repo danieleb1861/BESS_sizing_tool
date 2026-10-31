@@ -11,8 +11,8 @@ KPIs provided
 -------------
     - fuel_kg: total fuel mass [kg] — populated by caller from DP.
     - c_rate_mean_per_h: average C-rate magnitude over the horizon [1/h].
-    - dod_mean: mean depth-of-discharge used across the horizon (max(SoC)-min(SoC)).
-    - efc_per_year: effective full cycles per year (simple proxy model).
+    - dod_mean: mean depth of the individual discharge excursions, as a fraction.
+    - efc_per_year: annual discharge cycles normalized to dod_max (proxy model).
     - energy_throughput_kwh:total absolute battery energy processed [kWh].
     - t_backup_min: backup time at rated power within the usable SoC band [min].
     - volume_m3: volumetric footprint proxy: energy x (m³/kWh).
@@ -33,8 +33,8 @@ class KPIs:
     """
     fuel_kg: float
     c_rate_mean_per_h: float          # mean |C-rate| over the mission [1/h]
-    dod_mean: float                   # SoC span over the mission [0..1]
-    efc_per_year: float               # MATLAB-style annual EFD cycles
+    dod_mean: float                   # mean discharge depth [0..1]
+    efc_per_year: float               # annual EFD cycles at reference dod_max
     energy_throughput_kwh: float      # Σ |P_bess| · Δt  [kWh]
     t_backup_min: float               # backup time at DoD = 0.6  [min]
     volume_m3: float                  # geometry-based volume proxy [m^3]
@@ -96,28 +96,37 @@ def compute_kpis(p_bess_kw: np.ndarray,
     
     p_bess_kw = np.asarray(p_bess_kw, float).ravel()
     dt_min = np.asarray(dt_min, float).ravel()
-    soc = np.asarray(soc, float).ravel()
+    soc = np.asarray(soc, float)
+    if soc.ndim not in (1, 2) or soc.size == 0:
+        raise ValueError("soc must contain one trace or a row per manoeuvre")
+    if p_bess_kw.size != dt_min.size or p_bess_kw.size != soc.size:
+        raise ValueError("Power, duration and SoC arrays must have matching sizes")
+    if not (np.all(np.isfinite(p_bess_kw)) and np.all(np.isfinite(dt_min))
+            and np.all(np.isfinite(soc)) and np.all(dt_min >= 0)):
+        raise ValueError("KPI inputs must be finite with nonnegative durations")
+    if not (bes.e_kwh > 0 and 0 < dod_max <= 1 and days_leg > 0 and days_year >= 0):
+        raise ValueError("Invalid energy, reference DoD or annualization parameters")
     
     # Average absolute C‑rate (per hour).
     c_rate = np.abs(p_bess_kw) / bes.e_kwh
-    c_rate_mean = float(np.nanmean(c_rate))
+    duration = float(np.sum(dt_min))
+    c_rate_mean = float(np.sum(c_rate * dt_min) / duration) if duration > 0 else 0.0
 
-    # DoD mean (span over the mission) (robust to 1-D or 2-D)
-    if soc.ndim == 1:
-        span_per_leg = np.array([np.nanmax(soc) - np.nanmin(soc)], dtype=float)
-    elif soc.ndim == 2:
-        span_per_leg = np.nanmax(soc, axis=1) - np.nanmin(soc, axis=1)
-        span_per_leg = np.asarray(span_per_leg, float).ravel()
-    else:
-        raise ValueError(f"Expected soc to be 1-D or 2-D, got shape {soc.shape}")
-
-    dod_mean = float(np.nansum(span_per_leg) / dod_max)   # if band is 0–1.0
+    # Consecutive decreases form one discharge; plateaus do not split it.
+    depths = []
+    for trace in np.atleast_2d(soc):
+        steps = np.diff(trace)
+        steps = steps[steps != 0]
+        if steps.size:
+            runs = np.split(steps, np.flatnonzero(np.diff(np.sign(steps))) + 1)
+            depths.extend(-float(run.sum()) for run in runs if run[0] < 0)
+    dod_mean = float(np.mean(depths)) if depths else 0.0
     
     # Energy throughput: integral of |P_bess| dt [kWh]
     e_through = float(np.nansum(np.abs(p_bess_kw) * (dt_min/60.0)))
     
-    # Annual Equivalent Full Discharge Cycles. The factor 2 assumes a full cycle corresponds to charge + discharge between the reference DoD band.
-    efc = 2.0 * (days_year / days_leg) * (dod_mean / dod_max)
+    # Two manoeuvres per navigation period; average over supplied manoeuvres.
+    efc = 2.0 * (days_year / days_leg) * (sum(depths) / np.atleast_2d(soc).shape[0] / dod_max)
     
     # Backup time at rated power, using usable SOC band
     t_backup = float(bes.backup_minutes())
