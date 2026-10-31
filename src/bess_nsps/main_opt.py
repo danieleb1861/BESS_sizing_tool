@@ -310,7 +310,11 @@ def main():
     df = pd.DataFrame(rows)
     cols = ["fuel_kg", "c_rate_mean_per_h", "dod_mean",
             "efc_per_year", "energy_throughput_kwh", "t_backup_min", "volume_m3"]
-    df["pareto"] = nondominated(df[cols].to_numpy())
+    df["pareto"] = False
+    for _, group in df.groupby("profile", sort=False):
+        objectives = group[cols].to_numpy().copy()
+        objectives[:, cols.index("t_backup_min")] *= -1
+        df.loc[group.index, "pareto"] = nondominated(objectives)
 
     # Use cache: plot/save only Pareto points
     out_base = os.path.join(os.path.dirname(args.save), "traces.h5")

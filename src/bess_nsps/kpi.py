@@ -120,7 +120,7 @@ def compute_kpis(p_bess_kw: np.ndarray,
     efc = 2.0 * (days_year / days_leg) * (dod_mean / dod_max)
     
     # Backup time at rated power, using usable SOC band
-    t_backup = float(bes.backup_minutes(dod_max=0.60))
+    t_backup = float(bes.backup_minutes())
     
     # Volume proxy
     if volume_method == "geometry":

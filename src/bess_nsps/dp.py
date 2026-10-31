@@ -180,6 +180,8 @@ def run_dp(p_load_kw: np.ndarray,
     for ni in range(N):
         n = ni + 1
         for b in range(B):
+            if not np.isclose(p_grid[b], 0.0, rtol=0.0, atol=1e-12):
+                continue
             if not feas_gen[0, ni, b]:
                 continue
             soc1 = _soc_update(soc0, float(p_grid[b]), dt, bes)
