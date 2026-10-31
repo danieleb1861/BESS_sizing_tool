@@ -12,6 +12,7 @@ It supports:
 
 import os
 import os
+import warnings
 from typing import Tuple, Any, Dict, Iterable, Optional
 import numpy as np
 import pandas as pd
@@ -38,6 +39,8 @@ def _flatten_dict(d: Dict[str, Any], prefix: str = "") -> Dict[str, np.ndarray]:
         if hasattr(v, "dtype") and getattr(v.dtype, "names", None):
             for field in v.dtype.names:
                 out.update(_flatten_dict({field: v[field]}, prefix=name))
+        elif hasattr(v, "_fieldnames"):
+            out.update(_flatten_dict({field: getattr(v, field) for field in v._fieldnames}, prefix=name))
         elif isinstance(v, dict):
             out.update(_flatten_dict(v, prefix=name))
         else:
@@ -154,7 +157,7 @@ def get_mat_window(path: str) -> Optional[Dict[str, Any]]:
             i0 = int(np.asarray(i0).ravel()[0])
             i1 = int(np.asarray(i1).ravel()[0])
             if i0 >= 1 and i1 >= 1:
-                i0 -= 1; i1 -= 1
+                i0 -= 1  # MATLAB end is inclusive; Python stop is exclusive.
             return {"i0": max(0, i0), "i1": max(0, i1)}
 
     # Time windows in minutes
@@ -214,7 +217,7 @@ def load_profile(path: str, step_min: float = 1.0, max_samples: int = 100_000) -
         # flattened keys (nested)
         for k in aliases:
             for fk in flat:
-                if fk.split(".")[-1] == k or fk == k:
+                if fk.replace("/", ".").split(".")[-1] == k or fk == k:
                     a = np.asarray(flat[fk]).squeeze()
                     if _is_num_array(a):
                         return a.astype(float).ravel()
@@ -223,30 +226,33 @@ def load_profile(path: str, step_min: float = 1.0, max_samples: int = 100_000) -
     pow_load = pick_by_alias(p_aliases)
     t_plot = pick_by_alias(t_aliases)
 
-    # Heuristic fallback: take the largest 1-D numeric as pow_load
+    # Accept an unknown load name only if the numeric vector is unambiguous.
     if pow_load is None:
         candidates = []
         for k, a in flat.items():
+            if k.replace("/", ".").split(".")[-1] in t_aliases:
+                continue
             a = np.asarray(a).squeeze()
             if _is_num_array(a) and a.ndim == 1 and a.size > 10:
                 candidates.append((k, a))
         if not candidates:
             raise KeyError(f"Could not find a numeric load vector in {os.path.basename(path)} (tried {tried})")
-        candidates.sort(key=lambda kv: kv[1].size, reverse=True)
+        if len(candidates) != 1:
+            raise ValueError("Ambiguous MAT load vectors; use a recognized load field")
         pow_load = candidates[0][1].astype(float).ravel()
 
-    # Time vector: try to match length, else generate simple index
-    if t_plot is None or t_plot.size != pow_load.size:
-        t_match = None
-        for k, a in flat.items():
-            a = np.asarray(a).squeeze()
-            if _is_num_array(a) and a.ndim == 1 and a.size == pow_load.size:
-                t_match = a.astype(float).ravel()
-                break
-        if t_match is None:
-            t_plot = np.arange(pow_load.size, dtype=float)
-        else:
-            t_plot = t_match
+    # Missing time uses the declared sampling interval, never another data vector.
+    if t_plot is None:
+        if not np.isfinite(step_min) or step_min <= 0:
+            raise ValueError("step_min must be finite and positive when MAT time is absent")
+        warnings.warn(f"{os.path.basename(path)} has no time vector; assuming {step_min:g} min/sample",
+                      UserWarning, stacklevel=2)
+        t_plot = np.arange(pow_load.size, dtype=float) * step_min
+    if t_plot.size != pow_load.size:
+        raise ValueError("MAT load and time vectors have different lengths")
+    if (pow_load.size < 2 or not np.all(np.isfinite(pow_load))
+            or not np.all(np.isfinite(t_plot)) or np.any(np.diff(t_plot) <= 0)):
+        raise ValueError("MAT profile needs finite samples and strictly increasing time")
 
     return pow_load.astype(float).ravel(), t_plot.astype(float).ravel()
 
