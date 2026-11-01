@@ -128,10 +128,9 @@ class DPRegressionTests(unittest.TestCase):
             pg = (load - pb) / n
             if not np.all(((pg >= 20.) & (pg <= 100.)) | (pg == 0)):
                 continue
-            units = np.where(np.arange(2)[None, :] < n[:, None], pg[:, None], 0.)
-            ramps = np.diff(units, axis=0)
-            if (np.any(ramps > self.dg.ramp_up_kw_per_min * dt[1:, None])
-                    or np.any(ramps < self.dg.ramp_dn_kw_per_min * dt[1:, None])):
+            ramps = np.diff(pg)
+            if (np.any(ramps > self.dg.ramp_up_kw_per_min * dt[1:])
+                    or np.any(ramps < self.dg.ramp_dn_kw_per_min * dt[1:])):
                 continue
             ds = np.where(pb >= 0, pb / self.bes.eta_d, pb * self.bes.eta_c) * dt / 60 / self.bes.e_kwh
             soc = 0.5 - np.cumsum(ds)
@@ -166,14 +165,84 @@ class DPRegressionTests(unittest.TestCase):
                 with self.assertRaisesRegex(error, "resource|exceeds"):
                     run_dp([120., 80., 160., 80.], np.arange(4), self.dg, self.bes, self.cfg)
 
-    def test_start_and_stop_ramps_are_enforced(self):
+    def test_ramps_limit_power_per_unit_across_commitment_changes(self):
+        # MATLAB reference, select_best_parent.m: diff = pdg - prev_states.pdg.
         self.dg.pmin_frac = .6
         self.dg.ramp_up_kw_per_min = 1.
         self.dg.ramp_dn_kw_per_min = -1.
         self.bes.pmax_kw = 0.
-        for load in ([80., 160.], [160., 80.]):
-            with self.subTest(load=load), self.assertRaisesRegex(RuntimeError, "No feasible"):
-                run_dp(load, [0., 1.], self.dg, self.bes, self.cfg)
+        result = run_dp([80., 160.], [0., 1.], self.dg, self.bes, self.cfg)
+        np.testing.assert_array_equal(result.n_active_opt, [1, 2])
+        result = run_dp([160., 80.], [0., 1.], self.dg, self.bes, self.cfg)
+        np.testing.assert_array_equal(result.n_active_opt, [2, 1])
+        with self.assertRaisesRegex(RuntimeError, "No feasible"):
+            run_dp([80., 100.], [0., 1.], self.dg, self.bes, self.cfg)
+
+    def lossy_case(self):
+        # Grid units cannot cancel with eta_c * eta_d = 0.9118, so grid-only closure means idle.
+        self.bes = BESSpec(40., .5, eta_c=.97, eta_d=.94)
+        self.cfg = DPConfig(2, 5, -1., 1.)
+        self.dg = DGSpec(100., pmax_frac=1., p_grid_kw=np.array([0., 50., 100.]),
+                         sfoc_g_per_kwh=np.array([300., 300., 200.]),
+                         ramp_up_kw_per_min=6000., ramp_dn_kw_per_min=-6000.)
+        return np.array([60., 100., 40., 90., 60., 80.]), np.arange(6) / 60.
+
+    def test_lossy_battery_closes_exactly_and_saves_fuel(self):
+        load, time = self.lossy_case()
+        result = run_dp(load, time, self.dg, self.bes, self.cfg)
+        idle = run_dp(load, time, self.dg, BESSpec(0., .5), self.cfg)
+        self.assertGreater(np.abs(result.p_bess_opt_kw).max(), 0.)
+        self.assertLess(result.cost_kg, idle.cost_kg)
+        self.assertEqual(result.soc_opt[-1], result.soc_opt[0])
+
+    def test_trajectory_obeys_the_soc_dynamics_and_the_power_balance(self):
+        load, time = self.lossy_case()
+        result = run_dp(load, time, self.dg, self.bes, self.cfg)
+        dt = np.diff(time, prepend=time[0])
+        power = result.p_bess_opt_kw
+        beta = np.where(power > 0, 1 / self.bes.eta_d, self.bes.eta_c)
+        np.testing.assert_allclose(.5 - np.cumsum(beta * power * dt / 60 / self.bes.e_kwh), result.soc_opt, atol=1e-12)
+        np.testing.assert_allclose(result.n_active_opt * result.p_dg_opt_kw + power, load)
+        fuel = result.n_active_opt * result.p_dg_opt_kw * dt / 60000. * sfoc_interp_g_per_kwh(
+            result.p_dg_opt_kw, self.dg.p_grid_kw, self.dg.sfoc_g_per_kwh)
+        self.assertAlmostEqual(result.cost_kg, fuel.sum(), places=12)
+
+    def test_never_worse_than_an_idle_battery(self):
+        rng = np.random.default_rng(1861)
+        self.bes = BESSpec(40., 2., eta_c=.97, eta_d=.94)
+        self.cfg = DPConfig(3, 21, -1., 1.)
+        for _ in range(5):
+            load = rng.uniform(60., 180., 40)
+            time = np.arange(40) / 60.
+            result = run_dp(load, time, self.dg, self.bes, self.cfg)
+            idle = run_dp(load, time, self.dg, BESSpec(0., 2.), self.cfg)
+            self.assertLessEqual(result.cost_kg, idle.cost_kg + 1e-12)
+
+    def test_cost_is_close_to_exhaustive_search_with_closure_power(self):
+        load, time = self.lossy_case()
+        dt = np.diff(time, prepend=time[0]) / 60.
+        best = np.inf
+        for actions in product((-40., -20., 0., 20., 40.), repeat=len(load) - 2):
+            soc, cost = .5, 0.
+            for j, power in enumerate((*actions, None), start=1):
+                if power is None:
+                    need = .5 - soc
+                    power = -need * .5 / dt[j] * (self.bes.eta_d if need < 0 else 1 / self.bes.eta_c)
+                    if abs(power) > 40.:
+                        cost = np.inf
+                        break
+                soc -= power * (1 / self.bes.eta_d if power > 0 else self.bes.eta_c) * dt[j] / .5
+                options = [n * (load[j] - power) / n * float(sfoc_interp_g_per_kwh(
+                               np.array([(load[j] - power) / n]), self.dg.p_grid_kw, self.dg.sfoc_g_per_kwh)[0])
+                           for n in (1, 2) if 20. <= (load[j] - power) / n <= 100. or load[j] == power]
+                if not options or not .2 <= soc <= .8:
+                    cost = np.inf
+                    break
+                cost += min(options) * dt[j] / 1000.
+            best = min(best, cost)
+        result = run_dp(load, time, self.dg, self.bes, self.cfg)
+        self.assertGreaterEqual(result.cost_kg, best - 1e-12)
+        self.assertLess(result.cost_kg, best * 1.001)
 
     def test_invalid_inputs_fail_before_solving(self):
         for time in ([0., 0.], [1., 0.], [0., np.nan]):

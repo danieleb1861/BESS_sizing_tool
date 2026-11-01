@@ -1,16 +1,20 @@
 """
-Exact dynamic programming on a finite battery-power grid.
+Dynamic programming on a battery-power grid and a discretised SoC.
 
-State: continuous SoC, active DG count and previous power action. Only
-identical floating-point states are merged; no bucketing or pruning is used.
+State: SoC, active DG count and previous power action. SoC stays continuous, so
+every returned trajectory obeys the SoC dynamics exactly; states of one (n, b)
+slice that fall in the same SoC cell keep the best path, judged on fuel plus the
+fuel that restores SoC_0. SOC_BINS_PER_STEP sets the cell width (the paper's
+N_SoC). States that can no longer close on SoC_0 are dropped as infeasible.
 Power at t applies over (t-1, t]; fuel and SoC use the same interval.
-Initial battery power is zero; terminal SoC equals the initial midpoint
-within SOC_TOL. Ramps include generator starts/stops, with zero minimum
-ON/OFF times as in the reference configuration.
+Initial battery power is zero. The last stage takes its power from the SoC step
+(paper Eq. 8), off the grid if needed, so that SoC_T equals SoC_0 (paper Eq. 10)
+with no tolerance and no free energy. Ramps limit the power change per unit across
+commitment changes too, as the MATLAB reference does; a unit that starts or stops
+is not ramped from or to zero, and there are no minimum ON/OFF times.
 
-Optimality is restricted to this control grid and these plant assumptions,
-within floating-point arithmetic. Exceeding a resource cap raises an error
-without returning an approximate solution.
+Optimality is restricted to this control grid, this SoC resolution and these
+plant assumptions. Exceeding a resource cap raises an error.
 """
 
 from dataclasses import dataclass
@@ -36,10 +40,10 @@ class DPResult:
 
 # ------------------------------ Numerical/resource limits ----------------------
 
-SOC_TOL = 1e-12       # Terminal equality tolerance; states are never rounded.
-STATES_CAP = 600      # Max states per (t,n,b); exceeding a cap aborts the solve.
-TOTAL_STATES_CAP = 200_000
-TRANSITIONS_CAP = 2_000_000
+SOC_BINS_PER_STEP = 4 # SoC cells per SoC change of full power over a median stage.
+STATES_CAP = 100_000  # Max states per (t,n,b); exceeding a cap aborts the solve.
+TOTAL_STATES_CAP = 30_000_000
+TRANSITIONS_CAP = 100_000_000_000
 
 # ------------------------------ Helpers ---------------------------------------
 
@@ -54,6 +58,23 @@ def _soc_update(soc_prev: float, p_bess_kw: float, dt_min: float, bes: BESSpec) 
 def _ensure_zero(grid: np.ndarray) -> np.ndarray:
     # Ensure 0.0 is present in the control grid.
     return np.unique(np.r_[grid, 0.0])
+
+def _soc_resolution(p_grid: np.ndarray, dt_vec: np.ndarray, bes: BESSpec) -> float:
+    # SoC cell width: a fraction of what full power moves over a median stage.
+    step = float(np.max(np.abs(p_grid))) * float(np.median(dt_vec[1:])) / 60.0 / bes.e_kwh
+    return step / SOC_BINS_PER_STEP if step > 0 else 1.0
+
+def _best_per_cell(idx: np.ndarray, cell: np.ndarray) -> np.ndarray:
+    # idx is sorted by merit, so the first state seen in each SoC cell is the best.
+    low = int(cell.min())
+    first = np.full(int(cell.max()) - low + 1, -1, dtype=np.int32)
+    first[cell[::-1] - low] = idx[::-1]
+    return first[first >= 0]
+
+def _ramp_ok(pg, pg_prev, dt: float, dg: DGSpec):
+    # Per-unit ramp limits between consecutive setpoints.
+    step = pg - pg_prev
+    return (step <= dg.ramp_up_kw_per_min * dt) & (step >= dg.ramp_dn_kw_per_min * dt)
 
 # ------------------------------ DP solver -------------------------------------
 
@@ -94,6 +115,7 @@ def run_dp(p_load_kw: np.ndarray,
                                       cfg.alpha_max*bes.pmax_kw,
                                       int(cfg.nbatt_steps)))
     B = p_grid.size
+    b_zero = int(np.flatnonzero(p_grid == 0.0)[0])
     if T * N * B > TOTAL_STATES_CAP:
         raise MemoryError("Exact DP table allocation exceeds TOTAL_STATES_CAP; shorten the horizon or grid")
 
@@ -116,99 +138,112 @@ def run_dp(p_load_kw: np.ndarray,
             sfoc[t, ni, :] = sfoc_interp_g_per_kwh(np.maximum(pdg_tn, 0.0),
                                                     dg.p_grid_kw, dg.sfoc_g_per_kwh)
     feas_gen = ((pdg >= pmin) & (pdg <= pmax)) | (pdg == 0.0)
-
-    # ---------- DP tables ----------
-    J = [[ [dict() for _ in range(B)] for _ in range(N) ] for _ in range(T)]
-    states = 0
-    transitions = 0
+    if np.any(feas_gen & ~np.isfinite(sfoc)):
+        raise ValueError("SFOC curve must cover all feasible generator powers")
 
     # ---------- t = 0 ----------
-    dt = float(dt_vec[0])
-    for ni in range(N):
-        n = ni + 1
-        for b in range(B):
-            if p_grid[b] != 0.0:
-                continue
-            if not feas_gen[0, ni, b]:
-                continue
-            soc1 = _soc_update(soc0, float(p_grid[b]), dt, bes)
-            if not (soc_min <= soc1 <= soc_max):
-                continue
-            fuel_kg = n * pdg[0, ni, b] * sfoc[0, ni, b] * (dt/60.0) / 1000.0
-            k = soc1
-            cur = J[0][ni][b].get(k)
-            if (cur is None) or (fuel_kg < cur[0]):
-                J[0][ni][b][k] = (fuel_kg, soc1, None)
-                states += 1
+    # Each stage is a table of states sorted by merit: (cost, soc, ni, b, parent).
+    keep = [ni for ni in range(N) if feas_gen[0, ni, b_zero]]
+    if not keep:
+        raise RuntimeError("No feasible closed-SoC trajectory on the configured power grid.")
+    size = len(keep)
+    if size > TOTAL_STATES_CAP:
+        raise MemoryError("DP state resource limit exceeded; shorten the horizon or grid")
+    stages = [(np.zeros(size), np.full(size, soc0), np.array(keep, dtype=np.int16),
+               np.full(size, b_zero, dtype=np.int16), np.full(size, -1, dtype=np.int32))]
+    states = size
+    transitions = 0
+    res = _soc_resolution(p_grid, dt_vec, bes)
+    # SoC per minute at full power: a state beyond these rates can never close on SoC_0.
+    rise = -cfg.alpha_min * bes.pmax_kw * bes.eta_c / 60.0 / bes.e_kwh
+    fall = cfg.alpha_max * bes.pmax_kw / bes.eta_d / 60.0 / bes.e_kwh
+    # Merit counts the fuel that restores SoC_0, or a state that spent more of the
+    # battery would win its cell only to pay that energy back at the closure [kg].
+    fuel_per_soc = bes.e_kwh * float(np.median(dg.sfoc_g_per_kwh)) / 1000.0
 
     # ---------- recursion ----------
-    for t in range(1, T):
+    for t in range(1, T - 1):
         dt = float(dt_vec[t])
-        up = dg.ramp_up_kw_per_min * dt
-        dn = dg.ramp_dn_kw_per_min * dt
-        for ni in range(N):
-            n = ni + 1
-            for nip in range(N):
-                for b_prev in range(B):
-                    for k_prev, (cost_prev, soc_prev, _) in J[t-1][nip][b_prev].items():
-                        pdg_prev = pdg[t-1, nip, b_prev]
-                        for b in range(B):
-                            transitions += 1
-                            if transitions > TRANSITIONS_CAP:
-                                raise RuntimeError("Exact DP resource limit: TRANSITIONS_CAP exceeded; no approximate result returned")
-                            if not feas_gen[t, ni, b]:
-                                continue
-                            dp = pdg[t, ni, b] - pdg_prev
-                            if dp > up or dp < dn:
-                                continue
-                            if ni > nip and pdg[t, ni, b] > up:
-                                continue  # Newly started units ramp from zero.
-                            if ni < nip and -pdg_prev < dn:
-                                continue  # Stopped units must ramp down to zero.
-                            soc_next = _soc_update(soc_prev, float(p_grid[b]), dt, bes)
-                            if not (soc_min <= soc_next <= soc_max):
-                                continue
-                            if t == T - 1 and abs(soc_next - soc0) > SOC_TOL:
-                                continue
-                            fuel_kg = n * pdg[t, ni, b] * sfoc[t, ni, b] * (dt/60.0) / 1000.0
-                            total = cost_prev + fuel_kg
-                            k = soc_next
-                            cur = J[t][ni][b].get(k)
-                            if (cur is None) or (total < cur[0]):
-                                if cur is None:
-                                    states += 1
-                                    if len(J[t][ni][b]) >= STATES_CAP or states > TOTAL_STATES_CAP:
-                                        raise MemoryError("Exact DP state resource limit exceeded; no states discarded or approximate result returned")
-                                J[t][ni][b][k] = (total, soc_next, (nip, b_prev, k_prev))
+        cost_p, soc_p, ni_p, b_p, _ = stages[-1]
+        left = float(t_min[T-1] - t_min[t])
+        floor = max(soc_min, soc0 - rise * left - 1e-12)
+        ceiling = min(soc_max, soc0 + fall * left + 1e-12)
+        groups, group_of = np.unique(ni_p.astype(np.int64) * B + b_p, return_inverse=True)
+        # allowed[n, b, group]: every target (n, b) against every previous (n, b) group.
+        allowed = _ramp_ok(pdg[t][:, :, None], pdg[t-1, groups // B, groups % B][None, None, :], dt, dg)
+        new = []
+        for b in range(B):
+            soc_next = soc_p + _soc_update(0.0, float(p_grid[b]), dt, bes)
+            in_band = (floor <= soc_next) & (soc_next <= ceiling)
+            cell = np.rint((soc_next - soc0) / res).astype(np.int64)
+            cell[soc_next == soc0] = cell.min() - 1  # An idle battery never merges, so it bounds the optimum.
+            for ni in np.flatnonzero(feas_gen[t, :, b]):
+                idx = np.flatnonzero(in_band & allowed[ni, b, group_of])
+                transitions += idx.size
+                if transitions > TRANSITIONS_CAP:
+                    raise RuntimeError("DP resource limit: TRANSITIONS_CAP exceeded; shorten the horizon or grid")
+                if idx.size == 0:
+                    continue
+                pick = _best_per_cell(idx, cell[idx])
+                states += pick.size
+                if pick.size > STATES_CAP or states > TOTAL_STATES_CAP:
+                    raise MemoryError("DP state resource limit exceeded; shorten the horizon or grid")
+                fuel_kg = (ni + 1) * pdg[t, ni, b] * sfoc[t, ni, b] * (dt/60.0) / 1000.0
+                new.append((cost_p[pick] + fuel_kg, soc_next[pick],
+                            np.full(pick.size, ni, dtype=np.int16),
+                            np.full(pick.size, b, dtype=np.int16), pick))
+        if not new:
+            raise RuntimeError("No feasible closed-SoC trajectory on the configured power grid.")
+        cost, soc, ni_new, b_new, parent = map(np.concatenate, zip(*new))
+        order = np.argsort(cost + fuel_per_soc * (soc0 - soc), kind="stable")
+        stages.append((cost[order], soc[order], ni_new[order], b_new[order], parent[order]))
 
-    # ---------- terminal condition: equal SoC within floating-point tolerance ----------
+    # ---------- terminal stage: the SoC step back to SoC_0 sets the power (Eq. 8, Eq. 10) ----------
+    dt = float(dt_vec[T-1])
+    cost_p, soc_p, ni_p, b_p, _ = stages[-1]
+    need = soc0 - soc_p
+    p_last = -need * bes.e_kwh / (dt/60.0) * np.where(need < 0, bes.eta_d, 1.0 / bes.eta_c)
+    pdg_prev = pdg[T-2, ni_p, b_p]
+    usable = (p_last >= cfg.alpha_min * bes.pmax_kw) & (p_last <= cfg.alpha_max * bes.pmax_kw)
     best = None
     for ni in range(N):
-        for b in range(B):
-            for k, entry in J[T-1][ni][b].items():
-                cost = entry[0]
-                if (best is None) or (cost < best[0]):
-                    best = (cost, T-1, ni, b, k)
+        pg = (p_load_kw[T-1] - p_last) / (ni + 1)
+        ok = usable & (((pg >= pmin) & (pg <= pmax)) | (pg == 0.0)) & _ramp_ok(pg, pdg_prev, dt, dg)
+        idx = np.flatnonzero(ok)
+        transitions += idx.size
+        if transitions > TRANSITIONS_CAP:
+            raise RuntimeError("DP resource limit: TRANSITIONS_CAP exceeded; shorten the horizon or grid")
+        if idx.size == 0:
+            continue
+        rate = sfoc_interp_g_per_kwh(np.maximum(pg[idx], 0.0), dg.p_grid_kw, dg.sfoc_g_per_kwh)
+        if not np.all(np.isfinite(rate)):
+            raise ValueError("SFOC curve must cover all feasible generator powers")
+        total = cost_p[idx] + (ni + 1) * pg[idx] * rate * (dt/60.0) / 1000.0
+        i = int(np.argmin(total))
+        if (best is None) or (total[i] < best[0]):
+            best = (float(total[i]), ni, int(idx[i]))
     if best is None:
         raise RuntimeError("No feasible closed-SoC trajectory on the configured power grid.")
 
     # ---------- backtracking ----------
-    best_cost, t, ni, b, k = best
+    best_cost, ni_end, parent = best
+    p_end = float(p_last[parent])
     soc_opt    = np.zeros(T)
     n_opt      = np.zeros(T, dtype=int)
     p_bess_opt = np.zeros(T)
     p_dg_opt   = np.zeros(T)
 
-    while t >= 0:
-        cost, soc_val, prev = J[t][ni][b][k]
-        soc_opt[t]    = soc_val
-        n_opt[t]      = ni + 1
-        p_bess_opt[t] = float(p_grid[b])
-        p_dg_opt[t]   = pdg[t, ni, b]
-        if prev is None:
-            break
-        nip, b_prev, k_prev = prev
-        t, ni, b, k = t-1, nip, b_prev, k_prev
+    soc_opt[T-1]    = soc0
+    n_opt[T-1]      = ni_end + 1
+    p_bess_opt[T-1] = p_end
+    p_dg_opt[T-1]   = (p_load_kw[T-1] - p_end) / (ni_end + 1)
+    for t in range(T - 2, -1, -1):
+        _, soc, ni_new, b_new, parents = stages[t]
+        soc_opt[t]    = soc[parent]
+        n_opt[t]      = ni_new[parent] + 1
+        p_bess_opt[t] = float(p_grid[b_new[parent]])
+        p_dg_opt[t]   = pdg[t, ni_new[parent], b_new[parent]]
+        parent = parents[parent]
 
     # # dt vector (minutes) you already have in main/solver
     # dt = np.diff(t_min, prepend=t_min[0])
