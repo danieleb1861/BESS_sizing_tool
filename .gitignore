@@ -23,3 +23,5 @@ outputs/
 *.key
 
 README.pdf
+
+.mathkeel/
