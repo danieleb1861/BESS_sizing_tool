@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import numpy as np
+from scipy.interpolate import PchipInterpolator
 
 @dataclass
 class DGSpec:
@@ -8,16 +9,16 @@ class DGSpec:
     pmax_frac: float = 0.95             # [-] upper bound fraction of pmax
     ramp_up_kw_per_min: float = None
     ramp_dn_kw_per_min: float = None
-    sfoc_g_per_kwh: np.ndarray = None   # [-] - shape (K,) - SFOC (specific fuel oil consumption) curve samples in g/kWh. Interpolated piecewise-linearly against p_grid_kw.
+    sfoc_g_per_kwh: np.ndarray = None   # shape (K,), g/kWh; PCHIP against p_grid_kw.
     p_grid_kw: np.ndarray = None        # [kW] - shape (K,) - Power grid where SFOC samples are defined.
 
     def __post_init__(self):
         # Derive default ramp limits if not provided
-        # Example: reach pmax in ~20 s up, ~10 s down
+        # MATLAB main_opt.m: reach pmax in 0.33 min up, 0.20 min down.
         if self.ramp_up_kw_per_min is None:
-            self.ramp_up_kw_per_min = self.pmax_kw / (30/60.0)  # [kW/min]
+            self.ramp_up_kw_per_min = self.pmax_kw / 0.33  # [kW/min]
         if self.ramp_dn_kw_per_min is None:
-            self.ramp_dn_kw_per_min = -self.pmax_kw / (20/60.0) # [kW/min]
+            self.ramp_dn_kw_per_min = -self.pmax_kw / 0.20 # [kW/min]
 
 @dataclass
 class BESSpec:
@@ -37,7 +38,13 @@ class BESSpec:
 def sfoc_interp_g_per_kwh(p_kw: np.ndarray, p_grid_kw: np.ndarray, sfoc: np.ndarray) -> np.ndarray:
     # Interpolate the SFOC [g/kWh] for arbitrary generator loading.
     # p_kw is the desired operating power array where SFOC is needed
-    return np.interp(p_kw, p_grid_kw, sfoc)
+    p_grid_kw = np.asarray(p_grid_kw, float)
+    sfoc = np.asarray(sfoc, float)
+    if (p_grid_kw.ndim != 1 or sfoc.shape != p_grid_kw.shape or p_grid_kw.size < 2
+            or not np.all(np.isfinite(p_grid_kw)) or not np.all(np.isfinite(sfoc))
+            or np.any(np.diff(p_grid_kw) <= 0) or np.any(sfoc < 0)):
+        raise ValueError("SFOC needs finite nonnegative samples on an increasing power grid")
+    return PchipInterpolator(p_grid_kw, sfoc, extrapolate=False)(p_kw)
 
 def power_balance(p_load_kw: float, p_batt_kw: float, n_active: int) -> float:
     # Power balance: compute generator power setpoint to meet load at each instant.

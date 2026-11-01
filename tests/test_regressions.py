@@ -11,7 +11,7 @@ from scipy.io import savemat
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from bess_nsps.kpi import compute_kpis
-from bess_nsps.models import BESSpec, DGSpec
+from bess_nsps.models import BESSpec, DGSpec, sfoc_interp_g_per_kwh
 from bess_nsps.dp import DPConfig, run_dp
 from bess_nsps.data import get_mat_window, load_profile
 from bess_nsps.window import slice_by_indices
@@ -180,6 +180,23 @@ class DPRegressionTests(unittest.TestCase):
         self.cfg.alpha_max = 2.
         with self.assertRaises(ValueError):
             run_dp([80., 80.], [0., 1.], self.dg, self.bes, self.cfg)
+
+
+class ModelRegressionTests(unittest.TestCase):
+    def test_pchip_preserves_knots_and_shape(self):
+        # PCHIP for (0,0), (1,1), (2,0) has slopes 2,0,-2.
+        actual = sfoc_interp_g_per_kwh(np.array([0., .5, 1., 1.5, 2.]),
+                                      np.array([0., 1., 2.]), np.array([0., 1., 0.]))
+        np.testing.assert_allclose(actual, [0., .75, 1., .75, 0.])
+
+    def test_default_ramps_match_matlab_values(self):
+        dg = DGSpec(2200.)
+        self.assertAlmostEqual(dg.ramp_up_kw_per_min, 2200. / .33)
+        self.assertAlmostEqual(dg.ramp_dn_kw_per_min, -2200. / .2)
+
+    def test_invalid_fuel_curve_is_rejected(self):
+        with self.assertRaises(ValueError):
+            sfoc_interp_g_per_kwh(np.array([50.]), np.array([0., 100.]), np.array([200., np.nan]))
 
 
 if __name__ == "__main__":

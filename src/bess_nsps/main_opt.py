@@ -34,7 +34,7 @@ except Exception:
     csv_dt_bounds_to_minutes = None
 
 # Plant/BESS specs and DP interface
-from .models import DGSpec, BESSpec
+from .models import DGSpec, BESSpec, sfoc_interp_g_per_kwh
 from .dp import DPConfig, run_dp
 from .kpi import compute_kpis
 from . import plots
@@ -330,7 +330,7 @@ def main():
                 t_min,
                 res.p_dg_opt_kw,
                 np.array(res.n_active_opt, dtype=float),
-                lambda x: np.interp(x, dg.p_grid_kw, dg.sfoc_g_per_kwh),
+                lambda x: sfoc_interp_g_per_kwh(x, dg.p_grid_kw, dg.sfoc_g_per_kwh),
                 outdir_plots_run,
                 stem=stem,
             )
