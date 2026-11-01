@@ -262,15 +262,13 @@ def main():
 
         # 3) Safety: non-empty & monotonic time
         if len(t_min) == 0:
-            print(f"[warn] windowing produced zero samples on {os.path.basename(prof)}; using full series.")
-            pow_load_kw, t_min = _safe_load_profile(prof)
+            raise ValueError(f"Selected window contains no samples: {os.path.basename(prof)}")
 
         t_min = np.asarray(t_min, float).ravel()
         pow_load_kw = np.asarray(pow_load_kw, float).ravel()
-        keep = np.concatenate(([True], np.diff(t_min) > 0))
-        t_min, pow_load_kw = t_min[keep], pow_load_kw[keep]
-        if t_min.size < 2:
-            continue
+        if (t_min.size < 2 or t_min.size != pow_load_kw.size
+                or not np.all(np.isfinite(t_min)) or np.any(np.diff(t_min) <= 0)):
+            raise ValueError("Selected profile needs matching samples and strictly increasing times")
 
         # 4) Outer sweep + DP
         pairs = product(p_grid, e_grid)

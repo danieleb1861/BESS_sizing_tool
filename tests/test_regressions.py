@@ -1,6 +1,8 @@
 import sys
 import tempfile
 import unittest
+import io
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 from itertools import product
 from unittest.mock import patch
@@ -197,6 +199,43 @@ class ModelRegressionTests(unittest.TestCase):
     def test_invalid_fuel_curve_is_rejected(self):
         with self.assertRaises(ValueError):
             sfoc_interp_g_per_kwh(np.array([50.]), np.array([0., 100.]), np.array([200., np.nan]))
+
+
+class CLIRegressionTests(unittest.TestCase):
+    def test_full_sweep_keeps_pareto_per_profile(self):
+        import h5py
+        import pandas as pd
+        from bess_nsps import main_opt
+
+        with tempfile.TemporaryDirectory(prefix="bess_cli_test_") as folder:
+            root = Path(folder)
+            profiles = []
+            for name, load in [("a", 100), ("b", 150)]:
+                path = root / (name + ".csv")
+                path.write_text("date,time,pow_kw\n" + "".join(
+                    f"2024-01-01,00:0{i}:00,{load}\n" for i in range(3)))
+                profiles.append(str(path))
+            output = root / "out" / "results.csv"
+            argv = ["main_opt", "--profiles", *profiles, "--dg-pmax", "200", "--ndg", "2",
+                    "--bess-pmin", "100", "--bess-pmax", "100", "--bess-pesteps", "1",
+                    "--bess-emin", "100", "--bess-emax", "101", "--bess-esteps", "2",
+                    "--nbatt-steps", "3", "--save", str(output), "--plots", "--save-traces"]
+            with patch.object(sys, "argv", argv), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                main_opt.main()
+            result = pd.read_csv(output)
+            self.assertEqual(len(result), 4)
+            for _, group in result.groupby("profile"):
+                self.assertEqual(group.loc[group.pareto, "bess_e_kwh"].tolist(), [101.])
+            self.assertEqual(len(list(output.parent.glob("plots/*/*.png"))), 3)
+            dg = main_opt.build_dg(200.)
+            with h5py.File(output.parent / "traces.h5", "r") as traces:
+                for name in ("a", "b"):
+                    trace = traces[name]["p100_e101"]
+                    power = trace["p_dg_kw"][:]
+                    dt = np.diff(trace["t_min"][:], prepend=0.)
+                    cost = np.sum(power * trace["n_active"][:] * dt
+                                  * sfoc_interp_g_per_kwh(power, dg.p_grid_kw, dg.sfoc_g_per_kwh) / 60000.)
+                    self.assertAlmostEqual(trace.attrs["fuel_kg"], cost)
 
 
 if __name__ == "__main__":
