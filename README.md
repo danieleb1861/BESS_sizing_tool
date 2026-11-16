@@ -1,6 +1,6 @@
 [//]: # (D:\Files\0_Dottorato\Calculations\0-Software\3-Python\BESS_sizing_tool> pandoc README.md -o README.pdf --pdf-engine=pdflatex)
 
-## Battery Energy Storage System sizing for Naval Ship Power Systems — Open Access Tool
+## Battery Energy Storage System sizing for Naval Ship Power Systems - Open Access Tool
 
 <div align="center"
 
